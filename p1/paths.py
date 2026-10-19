@@ -54,7 +54,8 @@ RULES_FILE = _first_existing(
 WORDS_FILE = _first_existing(
     os.path.join(BUNDLE, "..", "data", "russian-words",
                  "100000-russian-words.txt"),
-    os.path.join(BUNDLE, "russian-words.txt"),
+    os.path.join(BUNDLE, "100000-russian-words.txt"),   # PyInstaller 打进来的原始文件名
+    os.path.join(BUNDLE, "russian-words.txt"),          # 兼容旧写法
 )
 
 SETTINGS_FILE = user_path("settings.json")

@@ -45,7 +45,7 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.1.5"
+VERSION = "0.1.6"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -658,6 +658,7 @@ class App:
         self._font_seen = set()
         self._skip_seen = set()
         self.layout_ru = None
+        self._guard = (0, 0.0, False)
         try:
             from wordbook import WordBook
             self.wb = WordBook()
@@ -984,10 +985,14 @@ class App:
         finally:
             ms = (time.perf_counter() - t0) * 1000.0
             if ms > 80:
+                tm = getattr(self, "_timing", {}) or {}
                 log(f"[perf] 更新耗时 {ms:.0f}ms  '{text[-24:]}'  "
-                    f"模式={self._mode} 锚={getattr(self, '_last_how', '')}")
+                    f"模式={self._mode} 锚={getattr(self, '_last_how', '')}  "
+                    f"分项: " + " ".join(f"{k}={v:.0f}ms" for k, v in tm.items()))
 
     def _update_inner(self, text):
+        t = time.perf_counter
+        t0 = t()
         word = current_word(text)
         if len(word) < 2 or not any("\u0400" <= c <= "\u04FF" for c in word):
             self.bar.hide()
@@ -995,9 +1000,14 @@ class App:
         if self._skip_here():
             self.bar.hide()
             return
+        t1 = t()
         cases = self.eng.suggest(word)
+        t2 = t()
         comp = self.eng.complete(word)
         valid = self.eng.is_valid(word)
+        t3 = t()
+        self._timing = {"guard": (t1 - t0) * 1000, "suggest": (t2 - t1) * 1000,
+                        "complete": (t3 - t2) * 1000}
 
         variants = {}
         if comp:
@@ -1021,17 +1031,36 @@ class App:
         # 规则：有补全就先帮拼写；没补全了（词已写完）才自动切到变格教学
         mode = "complete" if "complete" in variants else "cases"
         self._show(mode)
+        self._timing["show"] = (time.perf_counter() - t3) * 1000
 
     def _skip_here(self):
-        """密码框 / 排除程序里不弹候选条。"""
-        if is_password_focus():
-            self._note_skip("password")
-            return True
-        exe = foreground_exe()
-        if exe and exe in self.exclude:
-            self._note_skip(exe)
-            return True
-        return False
+        """密码框 / 排除程序里不弹候选条。
+
+        is_password_focus() 走 UIA，在 Chromium 里单次要 70-90ms，
+        所以按"前台窗口 + 1 秒"缓存，换窗口立刻重查。
+        """
+        try:
+            hwnd = user32.GetForegroundWindow()
+        except Exception:
+            hwnd = 0
+        now = time.time()
+        h, ts, blocked = self._guard
+        if h == hwnd and (now - ts) < 1.0:
+            return blocked
+        blocked = False
+        try:
+            if is_password_focus():
+                self._note_skip("password")
+                blocked = True
+            else:
+                exe = foreground_exe()
+                if exe and exe in self.exclude:
+                    self._note_skip(exe)
+                    blocked = True
+        except Exception:
+            pass
+        self._guard = (hwnd, now, blocked)
+        return blocked
 
     def _note_skip(self, reason):
         if reason not in self._skip_seen:
@@ -1373,6 +1402,12 @@ def _run_main():
                            for k, v in fba.items() if v}
         log(f"[配置] 按程序指定字号: {app.font_by_app}")
     log(f"[配置] 规则卡: {app.eng.rules_path}（{len(app.eng.cards)} 张）")
+    _d = app.eng.dic
+    if _d:
+        log(f"[配置] 词表: {len(_d.words)} 词，补全可用")
+    else:
+        log(f"[配置] ⚠ 词表未加载，补全不可用（只有变格提示）— "
+            f"找的是 {path_mod.WORDS_FILE if path_mod else '?'}")
 
     ls = installed_layouts()
     log("=" * 58)
