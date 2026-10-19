@@ -45,7 +45,7 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.1.6"
+VERSION = "0.1.7"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -217,7 +217,7 @@ class Bar:
         if tag:
             tk.Label(head, text="  " + tag, bg=self.bg, fg="#8a9199",
                      font=("Microsoft YaHei", -max(10, int(fs * 0.6)))).pack(side="left")
-        tk.Label(head, text="←/→ 选 · 1-6 · Enter · Ctrl+D 收藏 · Ctrl+L 查词 · Esc ",
+        tk.Label(head, text="←/→ 选 · 1-6 · 空格/Enter 确认 · Ctrl+D 收藏 · Ctrl+L 查词 · Esc ",
                  bg=self.bg, fg="#5c656d",
                  font=("Microsoft YaHei", -max(9, int(fs * 0.52)))).pack(side="right")
 
@@ -694,6 +694,22 @@ class App:
         if 0x31 <= vk <= 0x36:               # 数字 1-6 直选
             self.q.put(("pick", vk - 0x31))
             return True
+        if vk == 0x20:                       # 空格：直接选 1 号候选，并补一个空格
+            if (self.bar.visible and self._mode == "complete"
+                    and self.bar.items):
+                word = current_word(self.hook.buffer).lower()
+                first = self.bar.items[0]["form"].lower()
+                d = self.eng.dic
+                rank_w = d.rank.get(word, 10 ** 9) if d else 10 ** 9
+                rank_1 = d.rank.get(first, 10 ** 9) if d else 10 ** 9
+                # 只在"1 号候选明显比已打的词更常用（3 倍以上）"时接管空格。
+                # 这样 зав(10470)→зависеть(892) 会被接管，
+                # 而 завтра(934)→завтрак(2931)、друг(95)→другой(42) 不会。
+                if first != word and rank_1 * 3 < rank_w:
+                    self.q.put(("pick_space", None))
+                    log(f"[space] 接管空格：{word!r}(#{rank_w}) -> {first!r}(#{rank_1})")
+                    return True
+            return False                # 已打的是完整常用词，空格照常输入
         if vk == 0x0D:                       # Enter 确认当前高亮
             self.q.put(("pick", self.bar.selected))
             return True
@@ -730,6 +746,8 @@ class App:
                     self.bar.move(payload)
                 elif kind == "pick":
                     self._pick(payload)
+                elif kind == "pick_space":
+                    self._pick_space()
                 elif kind == "toggle":
                     self._toggle()
                 elif kind == "save":
@@ -935,6 +953,23 @@ class App:
             self._accept(self.bar.items[idx])
         else:
             log(f"[pick] 索引 {idx} 越界（共 {len(self.bar.items)} 项）")
+
+    def _pick_space(self):
+        """空格选 1 号候选，然后把空格补上，打字不断流。"""
+        if not self.bar.items:
+            return
+        item = self.bar.items[0]
+        ok = self._accept(item)
+        log(f"[space] 空格选 1 号 {item['form']!r} ok={ok}")
+        if ok:
+            try:
+                self.hook.pause()
+                time.sleep(0.03)
+                input_sim.send_text(" ")
+                time.sleep(0.03)
+            finally:
+                self.hook.resume()
+            self.hook.buffer += " "
 
     def _accept(self, item):
         """点选候选词：删掉已输入的部分，注入选中的词形。"""
