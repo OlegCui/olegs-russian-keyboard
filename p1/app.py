@@ -45,9 +45,9 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
-BAR_FONT_PX = 22        # 候选条固定字号（像素），不再跟随正文
+BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
 # 这些程序里一律不弹候选条（密码管理器）
 DEFAULT_EXCLUDE = {
