@@ -70,6 +70,9 @@ def start(app):
     def on_lookup(icon=None, item=None):
         ui(app.open_lookup_window)
 
+    def on_rules(icon=None, item=None):
+        ui(app.open_rules)
+
     def on_logs(icon=None, item=None):
         try:
             d = os.path.dirname(app.logpath)
@@ -86,20 +89,22 @@ def start(app):
             pass
         ui(app.quit)
 
+    ver = getattr(app, "version", "")
     menu = Menu(
-        MenuItem("Oleg's Russian Keyboard", None, enabled=False),
+        MenuItem(f"Oleg's Russian Keyboard v{ver}", None, enabled=False),
         Menu.SEPARATOR,
         MenuItem(lambda item: "▶ 继续" if app.paused else "⏸ 暂停",
                  on_toggle, default=True),
         MenuItem("生词本…", on_wordbook),
         MenuItem("查词…", on_lookup),
+        MenuItem("编辑规则卡…", on_rules),
         Menu.SEPARATOR,
         MenuItem("打开日志文件夹", on_logs),
         MenuItem("退出", on_quit),
     )
 
     icon = pystray.Icon("olegs_russian", _make_image(),
-                        "Oleg's Russian Keyboard", menu)
+                        f"Oleg's Russian Keyboard v{ver}", menu)
     t = threading.Thread(target=icon.run, name="tray", daemon=True)
     t.start()
     app.log("[tray] 托盘已启动")

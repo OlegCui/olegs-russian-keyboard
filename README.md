@@ -81,12 +81,36 @@ python p1/app.py
 ```
 %APPDATA%\OlegsRussianKeyboard\
     app.log          运行日志
+    settings.json    界面与排除程序设置
+    rules.json       规则卡（存在时优先于内置版本）
     user_freq.json   个人词频记忆
     wordbook.json    生词本
     生词本.md        生词本导出（可直接粘到笔记）
 ```
 
 **全部本地，不联网，不上传任何输入内容。**
+
+### 自定义规则卡
+
+托盘菜单 → **编辑规则卡…** 会自动把内置规则复制到 `%APPDATA%\OlegsRussianKeyboard\rules.json` 并打开记事本。
+
+改完**重启助手**生效。格式：
+
+```json
+{
+  "cards": [
+    {
+      "id": "unique-id",
+      "title": "看到的中文提示",
+      "pattern": "正则表达式",
+      "why": "为什么错",
+      "fix": "怎么改"
+    }
+  ]
+}
+```
+
+`pattern` 是正则，会对整句做匹配。这条机制意味着**改规则不用重新打包 exe**。
 
 ### 配置
 

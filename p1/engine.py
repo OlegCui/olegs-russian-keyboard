@@ -33,12 +33,24 @@ POS_ZH = {"NOUN": "名词", "ADJF": "形容词", "VERB": "动词", "INFN": "不�
           "PRTF": "形动词", "ADJS": "短形容词", "COMP": "比较级"}
 
 
+def resolve_rules():
+    """规则卡：用户目录优先（可改、免打包），找不到才用内置的。"""
+    try:
+        import paths
+        if os.path.exists(paths.RULES_USER):
+            return paths.RULES_USER
+        return paths.RULES_FILE
+    except Exception:
+        return os.path.join(HERE, "..", "p0", "rules.json")
+
+
 class Engine:
-    def __init__(self, rules_path=RULES):
+    def __init__(self, rules_path=None):
+        self.rules_path = rules_path or resolve_rules()
         self.morph = pymorphy3.MorphAnalyzer()
         self.cards = []
         try:
-            with open(rules_path, encoding="utf-8") as fh:
+            with open(self.rules_path, encoding="utf-8-sig") as fh:
                 self.cards = json.load(fh)["cards"]
         except Exception as e:
             print(f"[engine] 规则卡加载失败: {e}", file=sys.stderr)

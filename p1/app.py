@@ -17,6 +17,14 @@ import os
 import queue
 import sys
 import time
+
+# 必须在一切其它导入之前：--windowed 打包后 sys.stdout/stderr 是 None，
+# 任何模块在导入期 print 一句都会让程序直接死在隐藏的错误对话框里（双击无反应）。
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = sys.stdout
+
 import tkinter as tk
 from ctypes import wintypes as wt
 
@@ -30,12 +38,6 @@ import hook as hook_mod
 import input_sim
 import probe as probe_mod
 
-# 打包成 --windowed 时 sys.stdout/stderr 是 None，print 会炸
-if sys.stdout is None:
-    sys.stdout = open(os.devnull, "w", encoding="utf-8")
-if sys.stderr is None:
-    sys.stderr = sys.stdout
-
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
@@ -43,6 +45,7 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
+VERSION = "0.1.0"
 
 # 这些程序里一律不弹候选条（密码管理器）
 DEFAULT_EXCLUDE = {
@@ -73,8 +76,15 @@ def log(msg):
             _LOG_FH = open(LOGFILE, "a", encoding="utf-8")
         _LOG_FH.write(line + "\n")
         _LOG_FH.flush()
-    except Exception:
-        pass
+    except Exception as e:
+        # 写不进主日志时留个线索，否则打包后完全看不到问题
+        try:
+            import tempfile
+            with open(os.path.join(tempfile.gettempdir(), "olegs_log_fail.txt"),
+                      "a", encoding="utf-8") as fh:
+                fh.write(f"{line}   [写日志失败: {e}]\n")
+        except Exception:
+            pass
 
 
 def installed_layouts():
@@ -554,6 +564,7 @@ class App:
         self._word = ""
         self._picked_word = None          # 记录当前候选条对应的词，供 accept 校验
         self.paused = False
+        self.version = VERSION
         self.logpath = LOGFILE
         self.tray = None
         self._wb_win = None
@@ -705,6 +716,21 @@ class App:
         else:
             self.pill.set("俄语助手 运行中", True)
         log(f"[state] {'暂停' if self.paused else '继续'}")
+
+    def open_rules(self):
+        """打开规则卡文件供编辑；用户目录没有就先从内置复制一份。"""
+        try:
+            import shutil
+            import subprocess
+            import paths
+            target = paths.RULES_USER
+            if not os.path.exists(target):
+                shutil.copyfile(paths.RULES_FILE, target)
+                log(f"[rules] 已复制默认规则到 {target}")
+            subprocess.Popen(["notepad.exe", target])
+            self.pill.set("已打开规则卡，改完重启生效", True)
+        except Exception as e:
+            log(f"[rules] 打开失败: {e}")
 
     def open_wordbook(self):
         try:
@@ -895,7 +921,7 @@ class App:
                 f"布局=0x{foreground_lang():04X}")
             log("        如果这时你正在打字，说明钩子没收到——把 app.log 发我")
         else:
-            self.pill.set(f"运行中 · 已收 {self.key_count} 键", True)
+            self.pill.set(f"运行中 v{VERSION} · 已收 {self.key_count} 键", True)
         self.root.after(6000, self._heartbeat)
 
     def stop(self):
@@ -1077,7 +1103,12 @@ def _run_main():
                     help="只打开生词本窗口，不启动输入助手")
     ap.add_argument("--lookup", nargs="?", const="", default=None,
                     help="打开形式词典，可带一个词，如 --lookup другу")
+    ap.add_argument("--version", action="store_true", help="打印版本号后退出")
     a = ap.parse_args()
+
+    if a.version:
+        print(f"Oleg's Russian Keyboard v{VERSION}")
+        return
 
     if a.wordbook:
         from wordbook import WordBook
@@ -1126,9 +1157,11 @@ def _run_main():
     if extra:
         app.exclude |= {str(x).strip().lower() for x in extra if str(x).strip()}
     log(f"[配置] 排除程序（不弹候选条）: {sorted(app.exclude)}")
+    log(f"[配置] 规则卡: {app.eng.rules_path}（{len(app.eng.cards)} 张）")
 
     ls = installed_layouts()
     log("=" * 58)
+    log(f" Oleg's Russian Keyboard v{VERSION}")
     log(f" 已安装键盘布局: {[f'0x{x:04X}' for x in ls]}")
     if LANG_RU not in ls:
         log(" ❌ 没装俄语布局！先添加：设置 → 时间和语言 → 语言和区域")

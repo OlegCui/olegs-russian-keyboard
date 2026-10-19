@@ -58,20 +58,25 @@ WORDS_FILE = _first_existing(
 )
 
 SETTINGS_FILE = user_path("settings.json")
+RULES_USER = user_path("rules.json")        # 用户可改的规则卡（优先于内置）
 FREQ_FILE = user_path("user_freq.json")
 WORDBOOK_FILE = user_path("wordbook.json")
 WORDBOOK_MD = user_path("生词本.md")
 LOG_FILE = user_path("app.log")
 
 
-def describe():
-    return {
-        "frozen": FROZEN,
+SRC = {
+    "frozen": FROZEN,
         "bundle": BUNDLE,
         "user": USER,
         "rules": RULES_FILE,
+        "rules_user": RULES_USER,
         "words": WORDS_FILE,
-    }
+}
+
+
+def describe():
+    return SRC
 
 
 if __name__ == "__main__":
