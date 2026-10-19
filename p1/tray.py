@@ -104,6 +104,15 @@ def start(app):
     def on_show_pill(icon=None, item=None):
         ui(app.show_pill)
 
+    def on_font_big(icon=None, item=None):
+        ui(lambda: app.bump_font(+2))
+
+    def on_font_small(icon=None, item=None):
+        ui(lambda: app.bump_font(-2))
+
+    def on_font_reset(icon=None, item=None):
+        ui(lambda: app.bump_font(0))
+
     def on_logs(icon=None, item=None):
         try:
             d = os.path.dirname(app.logpath)
@@ -129,6 +138,11 @@ def start(app):
         MenuItem("生词本…", on_wordbook),
         MenuItem("查词…", on_lookup),
         MenuItem("编辑规则卡…", on_rules),
+        MenuItem("候选字号", Menu(
+            MenuItem("增大 +2", on_font_big),
+            MenuItem("减小 -2", on_font_small),
+            MenuItem("恢复默认", on_font_reset),
+        )),
         MenuItem("显示状态条", on_show_pill),
         Menu.SEPARATOR,
         MenuItem("打开日志文件夹", on_logs),

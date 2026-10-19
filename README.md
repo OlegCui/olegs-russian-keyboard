@@ -161,16 +161,19 @@ python p1/app.py
 
 ```json
 {
-  "font_size": 18,
+  "font_size": 22,
   "exclude_apps": ["game.exe", "some_app.exe"],
-  "font_px_by_app": { "msedge.exe": 20 }
+  "font_px_by_app": { "msedge.exe": 24 }
 }
 ```
 
-- `font_size`：候选条字号（像素）。**默认 18，固定不变，不跟随正文**
+- `font_size`：候选条字号（像素）。**默认 22，固定不变，不跟随正文**
   （之前的"跟随正文"会在不同程序间忽大忽小，已废弃）
 - `exclude_apps`：这些程序里不弹候选条（密码管理器已默认排除）
 - `font_px_by_app`：按程序单独指定字号，优先级高于 `font_size`
+
+**调字号最省事的办法**：托盘图标右键 → **候选字号** → 增大 / 减小。
+改完立刻生效并自动写回 `settings.json`，不用重启。
 
 ### 候选条的顺序
 

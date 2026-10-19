@@ -45,9 +45,9 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
-BAR_FONT_PX = 18        # 候选条固定字号（像素），不再跟随正文
+BAR_FONT_PX = 22        # 候选条固定字号（像素），不再跟随正文
 
 # 这些程序里一律不弹候选条（密码管理器）
 DEFAULT_EXCLUDE = {
@@ -836,6 +836,11 @@ class App:
             m.add_command(label="生词本…", command=self.open_wordbook)
             m.add_command(label="查词…", command=self.open_lookup_window)
             m.add_command(label="编辑规则卡…", command=self.open_rules)
+            sub = tk.Menu(m, tearoff=0)
+            sub.add_command(label="增大 +2", command=lambda: self.bump_font(+2))
+            sub.add_command(label="减小 -2", command=lambda: self.bump_font(-2))
+            sub.add_command(label="恢复默认", command=lambda: self.bump_font(0))
+            m.add_cascade(label=f"候选字号（当前 {self.bar.font_px}px）", menu=sub)
             m.add_separator()
             m.add_command(label="隐藏状态条", command=self.pill.hide)
             m.add_separator()
@@ -1032,6 +1037,41 @@ class App:
         if reason not in self._skip_seen:
             self._skip_seen.add(reason)
             log(f"[skip] 在 {reason} 里不弹候选条")
+
+    def bump_font(self, delta):
+        """托盘里调字号：delta=0 恢复默认，否则 ±。会写进 settings.json。"""
+        if delta == 0:
+            px = BAR_FONT_PX
+        else:
+            px = max(11, min(48, (self.bar.font_px or BAR_FONT_PX) + delta))
+        self.font_override = px
+        self.bar.set_font_size(px)
+        if self.bar.visible:
+            try:
+                self.bar.render(self.bar.data, keep_sel=True)
+            except Exception:
+                pass
+        self.pill.set(f"候选字号 {px}px（已保存）", True, autohide=2500)
+        log(f"[font] 用户把候选字号调成 {px}px")
+        self._save_font(px)
+
+    def _save_font(self, px):
+        try:
+            import json
+            import paths
+            cfg = paths.SETTINGS_FILE
+            data = {}
+            if os.path.exists(cfg):
+                try:
+                    with open(cfg, encoding="utf-8-sig") as fh:
+                        data = json.load(fh) or {}
+                except Exception:
+                    data = {}
+            data["font_size"] = int(px)
+            with open(cfg, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log(f"[font] 保存设置失败: {e}")
 
     def _font_px(self, fpx=0, how=""):
         """候选条字号固定，不再跟随正文。
@@ -1316,9 +1356,9 @@ def _run_main():
         fs = int(cfg_data["font_size"])
         log(f"[配置] 从 settings.json 读到字号 {fs}px")
     if fs:
-        log(f"[配置] 候选条字号固定为 {fs}px")
+        log(f"[配置] 候选条字号固定为 {fs}px（来自设置）")
     else:
-        log("[配置] 候选条字号自动跟随正文")
+        log(f"[配置] 候选条字号固定为 {BAR_FONT_PX}px（默认，不跟随正文）")
 
     app = App(require_lang=lang, verbose=True, font_override=fs)
 
