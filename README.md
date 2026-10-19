@@ -161,16 +161,16 @@ python p1/app.py
 
 ```json
 {
-  "font_size": null,
+  "font_size": 18,
   "exclude_apps": ["game.exe", "some_app.exe"],
-  "font_px_by_app": { "msedge.exe": 18, "chrome.exe": 18 }
+  "font_px_by_app": { "msedge.exe": 20 }
 }
 ```
 
-- `font_size`：候选条字号（像素）。`null` = 自动跟随正文光标大小
+- `font_size`：候选条字号（像素）。**默认 18，固定不变，不跟随正文**
+  （之前的"跟随正文"会在不同程序间忽大忽小，已废弃）
 - `exclude_apps`：这些程序里不弹候选条（密码管理器已默认排除）
-- `font_px_by_app`：**按程序指定字号**。浏览器 / Electron 应用（Chrome、Edge、微信内嵌页）
-  常常拿不到页面字体信息，这时只能兜底 16px；觉得不合适就在这里按程序名指定
+- `font_px_by_app`：按程序单独指定字号，优先级高于 `font_size`
 
 ### 候选条的顺序
 

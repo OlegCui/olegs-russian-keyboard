@@ -45,8 +45,9 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
+BAR_FONT_PX = 18        # 候选条固定字号（像素），不再跟随正文
 
 # 这些程序里一律不弹候选条（密码管理器）
 DEFAULT_EXCLUDE = {
@@ -189,11 +190,11 @@ class Bar:
                 log(f"[bar] on_pick 异常: {e}")
 
     def set_font_size(self, px):
-        self.font_px = max(min_font_px(), min(48, int(px)))
+        self.font_px = max(11, min(48, int(px)))
 
     def render(self, data, keep_sel=False):
         fs = self.font_px
-        limit = 6 if fs <= 16 else (5 if fs <= 22 else 4)
+        limit = 6 if fs <= 20 else (5 if fs <= 26 else 4)
         if not keep_sel or data is not self.data:
             self.selected = 0
             for i, it in enumerate(data["items"][:limit]):
@@ -210,15 +211,15 @@ class Bar:
         head.pack(fill="x", padx=9, pady=(6, 1))
         tk.Label(head, text=data.get("lemma", data["token"]), bg=self.bg,
                  fg="#e6edf3",
-                 font=("Segoe UI", max(9, int(fs * 0.72)), "bold")).pack(side="left")
+                 font=("Segoe UI", -max(13, int(fs * 0.78)), "bold")).pack(side="left")
         cur = data.get("current") or {}
         tag = " · ".join(x for x in [cur.get("pos_zh"), cur.get("case_zh")] if x)
         if tag:
             tk.Label(head, text="  " + tag, bg=self.bg, fg="#8a9199",
-                     font=("Microsoft YaHei", max(7, int(fs * 0.5)))).pack(side="left")
+                     font=("Microsoft YaHei", -max(10, int(fs * 0.6)))).pack(side="left")
         tk.Label(head, text="←/→ 选 · 1-6 · Enter · Ctrl+D 收藏 · Ctrl+L 查词 · Esc ",
                  bg=self.bg, fg="#5c656d",
-                 font=("Microsoft YaHei", max(7, int(fs * 0.45)))).pack(side="right")
+                 font=("Microsoft YaHei", -max(9, int(fs * 0.52)))).pack(side="right")
 
         row = tk.Frame(self.outer, bg=self.bg)
         row.pack(fill="x", padx=5, pady=(0, 6))
@@ -229,11 +230,11 @@ class Bar:
                             cursor="hand2")
             cell.pack(side="left", padx=2)
             l1 = tk.Label(cell, text=it["form"], bg=cell["bg"], fg="#ffffff",
-                          font=("Consolas", fs, "bold"))
+                          font=("Consolas", -fs, "bold"))
             l1.pack(padx=max(6, int(fs * 0.55)), pady=(3, 0))
             l2 = tk.Label(cell, text=f"{i + 1}  {it['label']}", bg=cell["bg"],
                           fg="#c8d0d8",
-                          font=("Microsoft YaHei", max(7, int(fs * 0.5))))
+                          font=("Microsoft YaHei", -max(10, int(fs * 0.6))))
             l2.pack(padx=7, pady=(0, 3))
             for w in (cell, l1, l2):
                 w.bind("<Button-1>", lambda e, x=it: self._click(x))
@@ -243,13 +244,13 @@ class Bar:
         if findings:
             f = findings[0]
             tk.Label(self.outer, text=f"⚠ {f['title']}", bg="#2a2320", fg="#ffb74d",
-                     font=("Microsoft YaHei", max(7, int(fs * 0.55))),
+                     font=("Microsoft YaHei", -max(10, int(fs * 0.62))),
                      anchor="w").pack(fill="x", padx=9, pady=(0, 5))
 
         hint = data.get("hint")
         if hint:
             tk.Label(self.outer, text=hint, bg=self.bg, fg="#5c656d",
-                     font=("Microsoft YaHei", max(7, int(fs * 0.45))),
+                     font=("Microsoft YaHei", -max(9, int(fs * 0.52))),
                      anchor="e").pack(fill="x", padx=9, pady=(0, 4))
 
         self.win.update_idletasks()
@@ -295,10 +296,10 @@ class StatusPill:
                               highlightthickness=1)
         self.frame.pack()
         self.dot = tk.Label(self.frame, text="●", bg=self.bg, fg="#ffb74d",
-                            font=("Segoe UI", 9))
+                            font=("Segoe UI", -12))
         self.dot.pack(side="left", padx=(8, 2), pady=5)
         self.label = tk.Label(self.frame, text="启动中…", bg=self.bg,
-                              fg="#c8d0d8", font=("Microsoft YaHei", 8))
+                              fg="#c8d0d8", font=("Microsoft YaHei", -12))
         self.label.pack(side="left", padx=(0, 8), pady=5)
 
         for w in (self.win, self.frame, self.dot, self.label):
@@ -1032,8 +1033,9 @@ class App:
             self._skip_seen.add(reason)
             log(f"[skip] 在 {reason} 里不弹候选条")
 
-    def _font_px(self, fpx, how=""):
-        """决定候选条字号：命令行 > 按程序覆盖 > 探测值 > 兜底。"""
+    def _font_px(self, fpx=0, how=""):
+        """候选条字号固定，不再跟随正文。
+        优先级：命令行 > settings.font_px_by_app > settings.font_size > 默认。"""
         if self.font_override:
             return int(self.font_override)
         try:
@@ -1042,19 +1044,8 @@ class App:
             exe = ""
         ov = self.font_by_app.get(exe) if exe else None
         if ov:
-            if (exe, ov) not in self._font_seen:
-                self._font_seen.add((exe, ov))
-                log(f"[font] {exe} 使用专用字号 {ov}px")
             return int(ov)
-        if fpx:
-            return max(min_font_px(), int(fpx))
-        # 拿不到任何字体信息（典型：Chromium / Electron 的内嵌页面）
-        # 直接用系统字体当字号会小到看不清，这里放大一点
-        px = max(min_font_px(), int(round(system_ui_font_px() * 1.35)))
-        if (exe, px) not in self._font_seen:
-            self._font_seen.add((exe, px))
-            log(f"[font] {(exe or '未知程序')} 拿不到字号（锚={how}）→ 兜底 {px}px")
-        return px
+        return BAR_FONT_PX
 
     def _show(self, mode):
         data = self._variants.get(mode)
