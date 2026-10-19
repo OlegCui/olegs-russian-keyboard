@@ -45,7 +45,8 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.1.1"
+VERSION = "0.1.2"
+DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 
 # 这些程序里一律不弹候选条（密码管理器）
 DEFAULT_EXCLUDE = {
@@ -652,6 +653,8 @@ class App:
         self.tray = None
         self._wb_win = None
         self.exclude = set(DEFAULT_EXCLUDE)
+        self.font_by_app = {}
+        self._font_seen = set()
         self._skip_seen = set()
         self.layout_ru = None
         try:
@@ -755,7 +758,9 @@ class App:
                 self.root.after_cancel(self._timer)
             except Exception:
                 pass
-        self._timer = self.root.after(320, lambda: self._update(text))
+        # 补全计算本身只要 0.1–5ms，延迟主要来自这里的 debounce。
+        # 原来是 320ms，打字快时会明显"慢半拍"，降到 120ms。
+        self._timer = self.root.after(DEBOUNCE_MS, lambda: self._update(text))
 
     def _word_end(self, word):
         # 用户自己打完并确认的词，算一次弱信号
@@ -966,6 +971,17 @@ class App:
             return False
 
     def _update(self, text):
+        """带计时的入口：卡顿超过 80ms 会写进日志，方便定位是哪一步慢。"""
+        t0 = time.perf_counter()
+        try:
+            self._update_inner(text)
+        finally:
+            ms = (time.perf_counter() - t0) * 1000.0
+            if ms > 80:
+                log(f"[perf] 更新耗时 {ms:.0f}ms  '{text[-24:]}'  "
+                    f"模式={self._mode} 锚={getattr(self, '_last_how', '')}")
+
+    def _update_inner(self, text):
         word = current_word(text)
         if len(word) < 2 or not any("\u0400" <= c <= "\u04FF" for c in word):
             self.bar.hide()
@@ -1016,14 +1032,39 @@ class App:
             self._skip_seen.add(reason)
             log(f"[skip] 在 {reason} 里不弹候选条")
 
+    def _font_px(self, fpx, how=""):
+        """决定候选条字号：命令行 > 按程序覆盖 > 探测值 > 兜底。"""
+        if self.font_override:
+            return int(self.font_override)
+        try:
+            exe = foreground_exe()
+        except Exception:
+            exe = ""
+        ov = self.font_by_app.get(exe) if exe else None
+        if ov:
+            if (exe, ov) not in self._font_seen:
+                self._font_seen.add((exe, ov))
+                log(f"[font] {exe} 使用专用字号 {ov}px")
+            return int(ov)
+        if fpx:
+            return max(min_font_px(), int(fpx))
+        # 拿不到任何字体信息（典型：Chromium / Electron 的内嵌页面）
+        # 直接用系统字体当字号会小到看不清，这里放大一点
+        px = max(min_font_px(), int(round(system_ui_font_px() * 1.35)))
+        if (exe, px) not in self._font_seen:
+            self._font_seen.add((exe, px))
+            log(f"[font] {(exe or '未知程序')} 拿不到字号（锚={how}）→ 兜底 {px}px")
+        return px
+
     def _show(self, mode):
         data = self._variants.get(mode)
         if not data:
             return
         self._mode = mode
         pos, how, fpx = best_anchor()
+        self._last_how = how
         x, y = pos if pos else (300, 300)
-        px = max(min_font_px(), self.font_override or fpx or 0)
+        px = self._font_px(fpx, how)
         self.bar.set_font_size(px)
         self.bar.render(data)
         self.bar.show_at(x, y)
@@ -1294,6 +1335,12 @@ def _run_main():
     if extra:
         app.exclude |= {str(x).strip().lower() for x in extra if str(x).strip()}
     log(f"[配置] 排除程序（不弹候选条）: {sorted(app.exclude)}")
+
+    fba = cfg_data.get("font_px_by_app") or {}
+    if isinstance(fba, dict) and fba:
+        app.font_by_app = {str(k).strip().lower(): int(v)
+                           for k, v in fba.items() if v}
+        log(f"[配置] 按程序指定字号: {app.font_by_app}")
     log(f"[配置] 规则卡: {app.eng.rules_path}（{len(app.eng.cards)} 张）")
 
     ls = installed_layouts()

@@ -162,12 +162,25 @@ python p1/app.py
 ```json
 {
   "font_size": null,
-  "exclude_apps": ["game.exe", "some_app.exe"]
+  "exclude_apps": ["game.exe", "some_app.exe"],
+  "font_px_by_app": { "msedge.exe": 18, "chrome.exe": 18 }
 }
 ```
 
 - `font_size`：候选条字号（像素）。`null` = 自动跟随正文光标大小
 - `exclude_apps`：这些程序里不弹候选条（密码管理器已默认排除）
+- `font_px_by_app`：**按程序指定字号**。浏览器 / Electron 应用（Chrome、Edge、微信内嵌页）
+  常常拿不到页面字体信息，这时只能兜底 16px；觉得不合适就在这里按程序名指定
+
+### 候选条的顺序
+
+```
+补全  →  更正  →  变格
+```
+
+- 列表里先给**补全**（你打 `прив`，先给 `привет / привести …`）
+- 只有当你打错的词**不再是 3 个以上词的前缀**时，才出现**更正**
+- 当前没有可补全的时候，自动切成**变格表**；两者都有时 `Tab` 切换
 
 ---
 

@@ -222,37 +222,39 @@ class Engine:
         return self._uf or None
 
     def complete(self, token, limit=6):
-        """补全/更正候选 [{form,label}]。按词频优先，并按个人使用习惯重排。"""
+        """补全在前，更正在后（变格是另一套视图，Tab 切换）。"""
         w = token.strip(PUNCT).lower()
         if len(w) < 2:
             return []
-        out = []
+
+        comps, corrs = [], []
         d = self.dic
         if d:
             longer = d.complete(w, 12)
+            comps = [{"form": c, "label": "补全"} for c in longer]
             # 只有在"不像还在打字"时才给更正：
             # 若这个词仍是 3 个以上词的前缀，用户显然没打完，不该说它拼错
             # （否则 прив 会被"更正"成 при / приз，很不礼貌）
             if not self.is_valid(w) and len(longer) < 3:
-                for c in d.correct(w, 2):
-                    out.append({"form": c, "label": "更正"})
-            for c in longer[:limit]:
-                out.append({"form": c, "label": "补全"})
-        seen, uniq = set(), []
-        for it in out:
-            if it["form"] not in seen:
-                seen.add(it["form"])
-                uniq.append(it)
+                corrs = [{"form": c, "label": "更正"} for c in d.correct(w, 2)]
+
+        seen = set()
+        comps = [x for x in comps if not (x["form"] in seen or seen.add(x["form"]))]
+        corrs = [x for x in corrs if not (x["form"] in seen or seen.add(x["form"]))]
 
         uf = self.uf
-        if uf and uniq:
+        if uf:
             rank = d.rank if d else {}
-            uniq.sort(key=lambda it: uf.sort_key(
-                it["form"], rank.get(it["form"], 10 ** 9)))
-            for it in uniq:
+
+            def key(it):
+                return uf.sort_key(it["form"], rank.get(it["form"], 10 ** 9))
+
+            comps.sort(key=key)
+            corrs.sort(key=key)
+            for it in comps + corrs:
                 if uf.count(it["form"]) > 0:
                     it["label"] = "常用"
-        return uniq[:limit]
+        return (comps + corrs)[:limit]
 
 
 def demo():
