@@ -1,0 +1,8 @@
+pymorphy3>=2.0.6
+pymorphy3-dicts-ru>=2.4.417150
+pywin32>=306
+uiautomation>=2.0.29
+psutil>=5.9
+pystray>=0.19
+pillow>=10.0
+pyinstaller>=6.0

@@ -1,0 +1,1165 @@
+# -*- coding: utf-8 -*-
+"""
+P1-b 整合：钩子 → 引擎 → 悬浮候选条
+
+架构：
+   [键盘钩子线程] --queue--> [Tk 主线程 pump] --> [引擎] --> [候选条]
+   跨线程只走队列，Tk 只在主线程操作。
+
+用法：
+  python app.py                 # 正式模式：只在俄语布局下工作
+  python app.py --lang none     # 调试模式：任何布局都工作
+  python app.py --selftest      # 自动自测（不依赖真实键盘注入）
+"""
+import argparse
+import ctypes
+import os
+import queue
+import sys
+import time
+import tkinter as tk
+from ctypes import wintypes as wt
+
+sys.stdout.reconfigure(encoding="utf-8")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+import engine as engine_mod
+import hook as hook_mod
+import input_sim
+import probe as probe_mod
+
+# 打包成 --windowed 时 sys.stdout/stderr 是 None，print 会炸
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = sys.stdout
+
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+GWL_EXSTYLE = -20
+WS_EX_NOACTIVATE = 0x08000000
+WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_TOPMOST = 0x00000008
+
+LANG_RU = 0x0419
+
+# 这些程序里一律不弹候选条（密码管理器）
+DEFAULT_EXCLUDE = {
+    "keepass.exe", "keepassxc.exe", "1password.exe", "bitwarden.exe",
+    "lastpass.exe", "dashlane.exe", "enpass.exe", "roboform.exe",
+}
+SEP = set(" \t\r\n.,;:!?()\"«»—–-")
+
+try:
+    import paths as path_mod
+    LOGFILE = path_mod.LOG_FILE
+except Exception:
+    path_mod = None
+    LOGFILE = os.path.join(HERE, "app.log")
+_LOG_FH = None
+
+
+def log(msg):
+    """同时写屏幕和日志文件，方便用户回传。"""
+    global _LOG_FH
+    line = f"[{time.strftime('%H:%M:%S')}] {msg}"
+    try:
+        print(line, flush=True)
+    except Exception:
+        pass
+    try:
+        if _LOG_FH is None:
+            _LOG_FH = open(LOGFILE, "a", encoding="utf-8")
+        _LOG_FH.write(line + "\n")
+        _LOG_FH.flush()
+    except Exception:
+        pass
+
+
+def installed_layouts():
+    n = user32.GetKeyboardLayoutList(0, None)
+    arr = (ctypes.c_void_p * n)()
+    user32.GetKeyboardLayoutList(n, arr)
+    return sorted({int(h) & 0xFFFF for h in arr if h})
+
+
+def foreground_lang():
+    fg = user32.GetForegroundWindow()
+    tid = user32.GetWindowThreadProcessId(fg, None)
+    hkl = user32.GetKeyboardLayout(tid)
+    return (int(hkl) & 0xFFFF) if hkl else 0
+
+
+def foreground_title():
+    fg = user32.GetForegroundWindow()
+    buf = ctypes.create_unicode_buffer(128)
+    user32.GetWindowTextW(fg, buf, 128)
+    return buf.value[:40]
+
+
+def current_word(text):
+    i = len(text)
+    while i > 0 and text[i - 1] not in SEP:
+        i -= 1
+    return text[i:]
+
+
+def focused_rect():
+    try:
+        import uiautomation as auto
+        c = auto.GetFocusedControl()
+        if c is None:
+            return None
+        r = c.BoundingRectangle
+        if r is None or r.right - r.left < 2 or r.bottom - r.top < 2:
+            return None
+        return (r.left, r.top, r.right, r.bottom)
+    except Exception:
+        return None
+
+
+HWND_TOPMOST = -1
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOACTIVATE = 0x0010
+SWP_FRAMECHANGED = 0x0020
+
+
+def _top_hwnd(win):
+    """Tk 的 winfo_id() 是子窗口，真正的顶层窗口要用 GetAncestor 取。"""
+    win.update_idletasks()
+    child = win.winfo_id()
+    return user32.GetAncestor(child, 2) or child
+
+
+def make_no_activate(win):
+    """WS_EX_NOACTIVATE 必须加在**顶层**窗口上，加在子窗口上完全无效。"""
+    h = _top_hwnd(win)
+    ex = user32.GetWindowLongW(h, GWL_EXSTYLE)
+    user32.SetWindowLongW(h, GWL_EXSTYLE,
+                          ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST)
+    user32.SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED)
+    return h
+
+
+class Bar:
+    """悬浮候选条：无边框、置顶、**不抢焦点**（否则点选后没法往目标程序打字）。"""
+
+    def __init__(self, root):
+        self.visible = False
+        self.last = None
+        self.on_pick = None          # 点选回调：回调参数是该候选词
+        self.cells = []              # [(frame, item)] 供自测定位
+        self.items = []
+        self.data = None
+        self.selected = 0
+        self.font_px = 14            # 由 App 根据光标高度设置
+        self.win = tk.Toplevel(root)
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        self.win.withdraw()
+        self.bg = "#1f2226"
+        self.win.configure(bg=self.bg)
+        self.outer = tk.Frame(self.win, bg=self.bg, highlightbackground="#3a3f45",
+                              highlightthickness=1)
+        self.outer.pack(fill="both", expand=True)
+        make_no_activate(self.win)
+
+    def hwnd(self):
+        return _top_hwnd(self.win)
+
+    def _click(self, item):
+        if self.on_pick:
+            try:
+                self.on_pick(item)
+            except Exception as e:
+                log(f"[bar] on_pick 异常: {e}")
+
+    def set_font_size(self, px):
+        self.font_px = max(min_font_px(), min(48, int(px)))
+
+    def render(self, data, keep_sel=False):
+        fs = self.font_px
+        limit = 6 if fs <= 16 else (5 if fs <= 22 else 4)
+        if not keep_sel or data is not self.data:
+            self.selected = 0
+            for i, it in enumerate(data["items"][:limit]):
+                if it["form"] == data["token"].lower():
+                    self.selected = i
+                    break
+        self.data = data
+        self.items = data["items"][:limit]
+
+        for c in self.outer.winfo_children():
+            c.destroy()
+
+        head = tk.Frame(self.outer, bg=self.bg)
+        head.pack(fill="x", padx=9, pady=(6, 1))
+        tk.Label(head, text=data.get("lemma", data["token"]), bg=self.bg,
+                 fg="#e6edf3",
+                 font=("Segoe UI", max(9, int(fs * 0.72)), "bold")).pack(side="left")
+        cur = data.get("current") or {}
+        tag = " · ".join(x for x in [cur.get("pos_zh"), cur.get("case_zh")] if x)
+        if tag:
+            tk.Label(head, text="  " + tag, bg=self.bg, fg="#8a9199",
+                     font=("Microsoft YaHei", max(7, int(fs * 0.5)))).pack(side="left")
+        tk.Label(head, text="←/→ 选 · 1-6 · Enter · Ctrl+D 收藏 · Ctrl+L 查词 · Esc ",
+                 bg=self.bg, fg="#5c656d",
+                 font=("Microsoft YaHei", max(7, int(fs * 0.45)))).pack(side="right")
+
+        row = tk.Frame(self.outer, bg=self.bg)
+        row.pack(fill="x", padx=5, pady=(0, 6))
+        self.cells = []
+        for i, it in enumerate(self.items):
+            sel = (i == self.selected)
+            cell = tk.Frame(row, bg="#3b6ea5" if sel else "#2c3136",
+                            cursor="hand2")
+            cell.pack(side="left", padx=2)
+            l1 = tk.Label(cell, text=it["form"], bg=cell["bg"], fg="#ffffff",
+                          font=("Consolas", fs, "bold"))
+            l1.pack(padx=max(6, int(fs * 0.55)), pady=(3, 0))
+            l2 = tk.Label(cell, text=f"{i + 1}  {it['label']}", bg=cell["bg"],
+                          fg="#c8d0d8",
+                          font=("Microsoft YaHei", max(7, int(fs * 0.5))))
+            l2.pack(padx=7, pady=(0, 3))
+            for w in (cell, l1, l2):
+                w.bind("<Button-1>", lambda e, x=it: self._click(x))
+            self.cells.append((cell, it))
+
+        findings = data.get("findings") or []
+        if findings:
+            f = findings[0]
+            tk.Label(self.outer, text=f"⚠ {f['title']}", bg="#2a2320", fg="#ffb74d",
+                     font=("Microsoft YaHei", max(7, int(fs * 0.55))),
+                     anchor="w").pack(fill="x", padx=9, pady=(0, 5))
+
+        hint = data.get("hint")
+        if hint:
+            tk.Label(self.outer, text=hint, bg=self.bg, fg="#5c656d",
+                     font=("Microsoft YaHei", max(7, int(fs * 0.45))),
+                     anchor="e").pack(fill="x", padx=9, pady=(0, 4))
+
+        self.win.update_idletasks()
+        self.visible = True
+
+    def move(self, d):
+        if not self.items:
+            return
+        self.selected = (self.selected + d) % len(self.items)
+        self.render(self.data, keep_sel=True)
+
+    def show_at(self, x, y):
+        w = self.win.winfo_reqwidth()
+        h = self.win.winfo_reqheight()
+        sw = self.win.winfo_screenwidth()
+        sh = self.win.winfo_screenheight()
+        x = max(4, min(int(x), sw - w - 4))
+        y = max(4, min(int(y), sh - h - 4))
+        self.win.geometry(f"{w}x{h}+{x}+{y}")
+        self.win.deiconify()
+        make_no_activate(self.win)     # 每次显示后重刷，防止被 Tk 重置
+        self.last = (x, y, w, h)
+
+    def hide(self):
+        if self.visible or self.win.state() != "withdrawn":
+            self.win.withdraw()
+        self.visible = False
+
+
+class StatusPill:
+    """右上角常驻状态条：一眼看出程序在不在跑、有没有收到按键。"""
+
+    def __init__(self, root):
+        self.win = tk.Toplevel(root)
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        self.bg = "#1f2226"
+        self.win.configure(bg=self.bg)
+        self.frame = tk.Frame(self.win, bg=self.bg, highlightbackground="#3a3f45",
+                              highlightthickness=1)
+        self.frame.pack()
+        self.dot = tk.Label(self.frame, text="●", bg=self.bg, fg="#ffb74d",
+                            font=("Segoe UI", 9))
+        self.dot.pack(side="left", padx=(8, 2), pady=5)
+        self.label = tk.Label(self.frame, text="启动中…", bg=self.bg,
+                              fg="#c8d0d8", font=("Microsoft YaHei", 8))
+        self.label.pack(side="left", padx=(0, 8), pady=5)
+        self._no_activate()
+        self.win.deiconify()
+        self.set("俄语助手 已启动 · 等按键", None)
+
+    def _no_activate(self):
+        make_no_activate(self.win)
+
+    def set(self, text, ok=None):
+        try:
+            self.label.config(text=text)
+            self.dot.config(fg="#4caf50" if ok is True else
+                            ("#ff6b6b" if ok is False else "#ffb74d"))
+            self.win.update_idletasks()
+            w = self.win.winfo_reqwidth()
+            sw = self.win.winfo_screenwidth()
+            self.win.geometry(f"+{max(0, sw - w - 12)}+8")
+            if not getattr(self, "_logged", False):
+                self._logged = True
+                log(f"[pill] 右上角状态条已显示 {self.win.geometry()}")
+        except Exception:
+            pass
+
+    def destroy(self):
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+
+
+def _flatten(obj):
+    out = []
+    if obj is None:
+        return out
+    if isinstance(obj, (int, float)):
+        return [float(obj)]
+    try:
+        seq = list(obj)
+    except Exception:
+        return out
+    for x in seq:
+        out.extend(_flatten(x))
+    return out
+
+
+UIA_FONT_SIZE_ID = 40014          # UIA_FontSizeAttributeId（单位：磅）
+
+
+def anchor_from_uia():
+    """一次拿到 UIA 的光标位置和字号。返回 (pos, 字号磅值) 或 None。"""
+    try:
+        import uiautomation as auto
+        c = auto.GetFocusedControl()
+        if c is None:
+            return None
+        tp = c.GetPattern(auto.PatternId.TextPattern)
+        if tp is None:
+            return None
+        sel = tp.GetSelection()
+        if not sel:
+            return None
+        rng = sel[-1] if isinstance(sel, (list, tuple)) else sel
+        pos = None
+        nums = _flatten(rng.GetBoundingRectangles())
+        if len(nums) >= 4:
+            x1, y1, x2, y2 = nums[-4:]
+            if not (x2 <= 0 and y2 <= 0):
+                pos = (int(x1), int(y2) + 4)
+        pt = None
+        try:
+            v = float(rng.GetAttributeValue(UIA_FONT_SIZE_ID))
+            if 4.0 <= v <= 72.0:
+                pt = v
+        except Exception:
+            pass
+        if pos is None and pt is None:
+            return None
+        return pos, pt
+    except Exception:
+        return None
+
+
+def caret_from_win32():
+    """GetGUIThreadInfo 的光标 → (x, y, 高度)。Word 走这条。"""
+    try:
+        s = probe_mod.sample()
+        c = (s or {}).get("caret")
+        if not c:
+            return None
+        h = int(c.get("h") or 0)
+        return (int(c["x"]), int(c["y"]) + max(h, 18), h)
+    except Exception:
+        return None
+
+
+def font_px_from_pt(pt):
+    """磅 → 像素（96 DPI 基准），下限是系统 UI 字体，上限 40。"""
+    if not pt:
+        return 0
+    lo = min_font_px()
+    return max(lo, min(40, int(round(float(pt) * 96.0 / 72.0))))
+
+
+def font_from_height(h):
+    """光标高度 → 字号（像素）。高度 <12 视为不可靠，返回 0。"""
+    if not h or h < 12:
+        return 0
+    return max(min_font_px(), min(40, int(round(h * 0.8))))
+
+
+class LOGFONTW(ctypes.Structure):
+    _fields_ = [("lfHeight", wt.LONG), ("lfWidth", wt.LONG),
+                ("lfEscapement", wt.LONG), ("lfOrientation", wt.LONG),
+                ("lfWeight", wt.LONG), ("lfItalic", wt.BYTE),
+                ("lfUnderline", wt.BYTE), ("lfStrikeOut", wt.BYTE),
+                ("lfCharSet", wt.BYTE), ("lfOutPrecision", wt.BYTE),
+                ("lfClipPrecision", wt.BYTE), ("lfQuality", wt.BYTE),
+                ("lfPitchAndFamily", wt.BYTE), ("lfFaceName", wt.WCHAR * 32)]
+
+
+class NONCLIENTMETRICSW(ctypes.Structure):
+    _fields_ = [("cbSize", wt.UINT),
+                ("iBorderWidth", ctypes.c_int), ("iScrollWidth", ctypes.c_int),
+                ("iScrollHeight", ctypes.c_int), ("iCaptionWidth", ctypes.c_int),
+                ("iCaptionHeight", ctypes.c_int), ("lfCaptionFont", LOGFONTW),
+                ("iSmCaptionWidth", ctypes.c_int), ("iSmCaptionHeight", ctypes.c_int),
+                ("lfSmCaptionFont", LOGFONTW),
+                ("iMenuWidth", ctypes.c_int), ("iMenuHeight", ctypes.c_int),
+                ("lfMenuFont", LOGFONTW), ("lfStatusFont", LOGFONTW),
+                ("lfMessageFont", LOGFONTW), ("iPaddedBorderWidth", ctypes.c_int)]
+
+
+def system_ui_font_px():
+    """系统界面字体大小（像素）。跟随 Windows 的「文本大小」和 DPI 缩放。"""
+    try:
+        ncm = NONCLIENTMETRICSW()
+        ncm.cbSize = ctypes.sizeof(ncm)
+        if user32.SystemParametersInfoW(0x0029, ncm.cbSize,
+                                        ctypes.byref(ncm), 0):
+            h = abs(int(ncm.lfMessageFont.lfHeight))
+            if 6 <= h <= 60:
+                return h
+    except Exception:
+        pass
+    try:
+        gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+        hf = gdi32.GetStockObject(17)          # DEFAULT_GUI_FONT
+        lf = LOGFONTW()
+        if gdi32.GetObjectW(hf, ctypes.sizeof(lf), ctypes.byref(lf)):
+            h = abs(int(lf.lfHeight))
+            if 6 <= h <= 60:
+                return h
+    except Exception:
+        pass
+    return 12
+
+
+_MIN_FONT_PX = None
+
+
+def min_font_px():
+    """候选条字号下限：低于这个就看不清了。"""
+    global _MIN_FONT_PX
+    if _MIN_FONT_PX is None:
+        _MIN_FONT_PX = max(12, system_ui_font_px())
+    return _MIN_FONT_PX
+
+
+def font_from_wm_getfont():
+    """问焦点控件要它的字体（WM_GETFONT）。记事本、多数 Win32 控件支持。"""
+    try:
+        h = user32.GetFocus()
+        if not h:
+            return 0
+        hf = user32.SendMessageW(h, 0x0031, 0, 0)      # WM_GETFONT
+        if not hf:
+            return 0
+        gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+        lf = LOGFONTW()
+        if gdi32.GetObjectW(hf, ctypes.sizeof(lf), ctypes.byref(lf)):
+            hgt = abs(int(lf.lfHeight))
+            if 6 <= hgt <= 120:
+                return max(14, min(40, hgt))
+    except Exception:
+        pass
+    return 0
+
+
+def foreground_exe():
+    """前台程序的可执行文件名（小写）。"""
+    try:
+        import psutil
+        import win32process
+        hwnd = user32.GetForegroundWindow()
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        return (psutil.Process(pid).name() or "").lower()
+    except Exception:
+        return ""
+
+
+def is_password_focus():
+    """焦点是不是密码框（银行/登录页绝不能把词送出去）。"""
+    try:
+        import uiautomation as auto
+        c = auto.GetFocusedControl()
+        return bool(getattr(c, "IsPassword", False))
+    except Exception:
+        return False
+
+
+def best_anchor():
+    """返回 (坐标, 策略名, 字号px)。字号 0 表示没测到。"""
+    pos, px = None, 0
+    u = anchor_from_uia()
+    how = "none"
+    if u:
+        upos, pt = u
+        px = font_px_from_pt(pt)
+        if upos:
+            pos, how = upos, "caret-uia"
+    if not px:
+        px = font_from_wm_getfont()
+    if pos is None:
+        w = caret_from_win32()
+        if w:
+            pos, how = (w[0], w[1]), "caret-win32"
+            if not px:
+                px = font_from_height(w[2])
+    if pos is None:
+        rect = focused_rect()
+        if rect:
+            rw, rh = rect[2] - rect[0], rect[3] - rect[1]
+            if rw < 1400 and rh < 900:
+                pos, how = (rect[0], rect[3] + 6), "control"
+            else:
+                how = "control-huge"
+    if pos is None:
+        try:
+            import win32api
+            mx, my = win32api.GetCursorPos()
+            sw = user32.GetSystemMetrics(0)
+            sh = user32.GetSystemMetrics(1)
+            mx = max(8, min(mx + 16, sw - 120))
+            my = max(8, min(my + 18, sh - 80))
+            pos, how = (mx, my), "mouse"
+        except Exception:
+            pos, how = None, "none"
+    return pos, how, px
+
+
+class App:
+    def __init__(self, require_lang=LANG_RU, verbose=False, font_override=None):
+        self.q = queue.Queue()
+        self.verbose = verbose
+        self.font_override = font_override
+        self.eng = engine_mod.Engine()
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.bar = Bar(self.root)
+        self.bar.on_pick = self._accept
+        self._timer = None
+        self._hide_timer = None
+        self.updates = 0
+        self.key_count = 0
+        self._variants = {}
+        self._mode = "cases"
+        self._word = ""
+        self._picked_word = None          # 记录当前候选条对应的词，供 accept 校验
+        self.paused = False
+        self.logpath = LOGFILE
+        self.tray = None
+        self._wb_win = None
+        self.exclude = set(DEFAULT_EXCLUDE)
+        self._skip_seen = set()
+        try:
+            from wordbook import WordBook
+            self.wb = WordBook()
+        except Exception as e:
+            log(f"[wordbook] 初始化失败: {e}")
+            self.wb = None
+        self.pill = StatusPill(self.root)
+        self.hook = hook_mod.KeyboardCapture(
+            on_text=lambda t: self.q.put(("text", t)),
+            on_word=lambda w: self.q.put(("word", w)),
+            require_lang=require_lang,
+            on_key=self._trace_key,
+            intercept=self._maybe_intercept,
+        )
+
+    def _maybe_intercept(self, vk):
+        """候选条显示时截下导航键，不让它们打到目标程序。"""
+        if not self.bar.visible:
+            return False
+        ctrl = bool(user32.GetAsyncKeyState(0x11) & 0x8000)
+        if ctrl and vk == 0x44:              # Ctrl+D 加入生词本
+            self.q.put(("save", None))
+            return True
+        if ctrl and vk == 0x4C:              # Ctrl+L 查词
+            self.q.put(("lookup", None))
+            return True
+        if vk == 0x1B:                       # Esc
+            self.q.put(("hide", None))
+            return True
+        if vk in (0x25, 0x27):               # ← →
+            self.q.put(("move", -1 if vk == 0x25 else 1))
+            return True
+        if 0x31 <= vk <= 0x36:               # 数字 1-6 直选
+            self.q.put(("pick", vk - 0x31))
+            return True
+        if vk == 0x0D:                       # Enter 确认当前高亮
+            self.q.put(("pick", self.bar.selected))
+            return True
+        if vk == 0x09:                       # Tab：有第二种视图就切换，否则确认
+            if len(self._variants) > 1:
+                self.q.put(("toggle", None))
+            else:
+                self.q.put(("pick", self.bar.selected))
+            return True
+        return False
+
+    def _trace_key(self, vk, scan, lang, ch):
+        self.key_count += 1
+        if self.key_count == 1 or self.key_count % 10 == 0:
+            self.pill.set(f"俄语助手 运行中 · 已收 {self.key_count} 键", True)
+        if not self.verbose:
+            return
+        want = self.hook.require_lang
+        flag = "OK " if (want is None or lang == want) else "SKIP"
+        log(f"[key] vk=0x{vk:02X} lang=0x{lang:04X} ch={ch!r:6} {flag}")
+
+    def start(self):
+        return self.hook.start()
+
+    def pump(self):
+        try:
+            while True:
+                kind, payload = self.q.get_nowait()
+                if kind == "text":
+                    self._schedule(payload)
+                elif kind == "word":
+                    self._word_end(payload)
+                elif kind == "move":
+                    self.bar.move(payload)
+                elif kind == "pick":
+                    self._pick(payload)
+                elif kind == "toggle":
+                    self._toggle()
+                elif kind == "save":
+                    self._save_word()
+                elif kind == "lookup":
+                    self._open_lookup()
+                elif kind == "hide":
+                    self.bar.hide()
+                elif kind == "ui":                 # 托盘线程投递过来的 UI 动作
+                    try:
+                        payload()
+                    except Exception as e:
+                        log(f"[ui] 动作异常: {e}")
+        except queue.Empty:
+            pass
+        self.root.after(40, self.pump)
+
+    def _schedule(self, text):
+        # 新输入取消待执行的收起动作，否则用户连续打字时候选条会闪
+        if self._hide_timer:
+            try:
+                self.root.after_cancel(self._hide_timer)
+            except Exception:
+                pass
+            self._hide_timer = None
+        if self._timer:
+            try:
+                self.root.after_cancel(self._timer)
+            except Exception:
+                pass
+        self._timer = self.root.after(320, lambda: self._update(text))
+
+    def _word_end(self, word):
+        # 用户自己打完并确认的词，算一次弱信号
+        if word and self.eng.uf:
+            self.eng.uf.add(word, 1)
+        if self._hide_timer:
+            try:
+                self.root.after_cancel(self._hide_timer)
+            except Exception:
+                pass
+        self._hide_timer = self.root.after(1500, self.bar.hide)
+
+    def _save_word(self):
+        """Ctrl+D：把当前词加入生词本。"""
+        if self.wb is None:
+            return
+        word = self._word or current_word(self.hook.buffer)
+        if not word:
+            return
+        info = self.eng.analyze(word)
+        top = info[0] if info else {}
+        new = self.wb.add(word, lemma=top.get("lemma") or "",
+                          pos=top.get("pos_zh") or "",
+                          case=top.get("case_zh") or "",
+                          app=foreground_title())
+        msg = "已加入生词本" if new else "已在生词本（次数 +1）"
+        self.pill.set(f"{msg}：{word}", True)
+        log(f"[wordbook] {word} lemma={top.get('lemma')} new={new} "
+            f"共 {len(self.wb)} 词")
+
+    def log(self, msg):
+        """给托盘等其他模块用的日志入口。"""
+        log(msg)
+
+    def set_paused(self, p):
+        """托盘开关：暂停后钩子完全不处理按键。"""
+        self.paused = bool(p)
+        self.hook.set_enabled(not self.paused)
+        if self.paused:
+            self.bar.hide()
+            self.pill.set("已暂停 · 从托盘恢复", False)
+        else:
+            self.pill.set("俄语助手 运行中", True)
+        log(f"[state] {'暂停' if self.paused else '继续'}")
+
+    def open_wordbook(self):
+        try:
+            if self._wb_win is not None:
+                try:
+                    if self._wb_win.winfo_exists():
+                        self._wb_win.deiconify()
+                        self._wb_win.lift()
+                        return
+                except Exception:
+                    pass
+            if self.wb is None:
+                return
+            self._wb_win = self.wb.show_window(self.root, self.eng)
+        except Exception:
+            import traceback
+            log("[wordbook] 打开失败:\n        " +
+                traceback.format_exc().replace("\n", "\n        "))
+
+    def open_lookup_window(self):
+        self._open_lookup()
+
+    def quit(self):
+        log("[exit] 退出程序")
+        try:
+            self.hook.stop()
+        except Exception:
+            pass
+        try:
+            if self.wb is not None:
+                self.wb.export_md()
+        except Exception:
+            pass
+        try:
+            self.root.quit()
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def _open_lookup(self, word=None):
+        """Ctrl+L：打开形式词典查当前词。"""
+        try:
+            import lookup
+            w = word or self._word or current_word(self.hook.buffer)
+            lookup.show_lookup(self.root, self.eng, w)
+            log(f"[lookup] 查词 {w!r}")
+        except Exception:
+            import traceback
+            log("[lookup] 打开失败:\n        " +
+                traceback.format_exc().replace("\n", "\n        "))
+
+    def _pick(self, idx):
+        if 0 <= idx < len(self.bar.items):
+            log(f"[pick] 索引 {idx} -> {self.bar.items[idx]['form']!r}")
+            self._accept(self.bar.items[idx])
+        else:
+            log(f"[pick] 索引 {idx} 越界（共 {len(self.bar.items)} 项）")
+
+    def _accept(self, item):
+        """点选候选词：删掉已输入的部分，注入选中的词形。"""
+        try:
+            buf = self.hook.buffer
+            word = current_word(buf)
+            n = len(word)
+            new = item["form"]
+            if word[:1].isupper() and new:
+                new = new[:1].upper() + new[1:]
+            fg_before = user32.GetForegroundWindow()
+            log(f"[accept] 点了 {item['form']!r} | 当前词={word!r} 退格={n} "
+                f"| 前台={fg_before:#x} {foreground_title()!r}")
+            self.hook.pause()
+            try:
+                ok = input_sim.replace_tail(n, new)
+                time.sleep(0.05)
+            finally:
+                self.hook.resume()
+            fg_after = user32.GetForegroundWindow()
+            # 注入期间钩子被暂停，这里手动把缓冲对齐到真实情况
+            self.hook.buffer = buf[:len(buf) - n] + new
+            # 强信号：用户从候选条里选了这个词
+            if self.eng.uf:
+                self.eng.uf.add(new, 2)
+                self.eng.uf.save(force=True)
+            log(f"[accept] 注入={ok} 前台后={fg_after:#x} "
+                f"缓冲={self.hook.buffer!r}")
+            if self._hide_timer:
+                try:
+                    self.root.after_cancel(self._hide_timer)
+                except Exception:
+                    pass
+                self._hide_timer = None
+            self.bar.hide()
+            return ok
+        except Exception:
+            import traceback
+            log("[accept] 异常:\n        " +
+                traceback.format_exc().replace("\n", "\n        "))
+            return False
+
+    def _update(self, text):
+        word = current_word(text)
+        if len(word) < 2 or not any("\u0400" <= c <= "\u04FF" for c in word):
+            self.bar.hide()
+            return
+        if self._skip_here():
+            self.bar.hide()
+            return
+        cases = self.eng.suggest(word)
+        comp = self.eng.complete(word)
+        valid = self.eng.is_valid(word)
+
+        variants = {}
+        if comp:
+            variants["complete"] = {
+                "token": word, "lemma": word, "current": {},
+                "items": comp, "findings": [],
+                "mode": "complete",
+                "hint": "Tab 看变格" if (valid and cases.get("items")) else "",
+            }
+        if valid and cases.get("items"):
+            c = dict(cases)
+            c["mode"] = "cases"
+            c["hint"] = "Tab 看补全" if comp else ""
+            variants["cases"] = c
+        if not variants:
+            self.bar.hide()
+            return
+
+        self._word = word
+        self._variants = variants
+        # 规则：有补全就先帮拼写；没补全了（词已写完）才自动切到变格教学
+        mode = "complete" if "complete" in variants else "cases"
+        self._show(mode)
+
+    def _skip_here(self):
+        """密码框 / 排除程序里不弹候选条。"""
+        if is_password_focus():
+            self._note_skip("password")
+            return True
+        exe = foreground_exe()
+        if exe and exe in self.exclude:
+            self._note_skip(exe)
+            return True
+        return False
+
+    def _note_skip(self, reason):
+        if reason not in self._skip_seen:
+            self._skip_seen.add(reason)
+            log(f"[skip] 在 {reason} 里不弹候选条")
+
+    def _show(self, mode):
+        data = self._variants.get(mode)
+        if not data:
+            return
+        self._mode = mode
+        pos, how, fpx = best_anchor()
+        x, y = pos if pos else (300, 300)
+        px = max(min_font_px(), self.font_override or fpx or 0)
+        self.bar.set_font_size(px)
+        self.bar.render(data)
+        self.bar.show_at(x, y)
+        self.updates += 1
+        if self.updates <= 10:
+            log(f"[bar:{mode}] {self._word} -> "
+                f"{[i['form'] for i in data['items'][:6]]} @({x},{y}) "
+                f"锚={how} 字号={px}px")
+
+    def _toggle(self):
+        other = "complete" if self._mode == "cases" else "cases"
+        if other in self._variants:
+            log(f"[toggle] {self._mode} -> {other}")
+            self._show(other)
+
+    def run(self):
+        self.root.after(40, self.pump)
+        self.root.after(6000, self._heartbeat)
+        try:
+            import tray
+            self.tray = tray.start(self)
+        except Exception as e:
+            log(f"[tray] 启动失败: {e}")
+        self.root.mainloop()
+
+    def _heartbeat(self):
+        if self.key_count == 0:
+            self.pill.set("已启动 · 还没收到按键（布局是吗？）", False)
+            log(f"[心跳] 还没收到任何按键 | 前台={foreground_title()!r} "
+                f"布局=0x{foreground_lang():04X}")
+            log("        如果这时你正在打字，说明钩子没收到——把 app.log 发我")
+        else:
+            self.pill.set(f"运行中 · 已收 {self.key_count} 键", True)
+        self.root.after(6000, self._heartbeat)
+
+    def stop(self):
+        self.hook.stop()
+        if self.tray is not None:
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
+
+
+def selftest():
+    """不依赖真实键盘：直接把文本事件喂进管线，验证 钩子→队列→引擎→候选条。"""
+    print("P1-b 自测（管线）")
+    app = App(require_lang=None)
+    # 用临时记忆库，别把测试词写进真实使用数据
+    try:
+        import tempfile
+        from learn import UserFreq
+        app.eng._uf = UserFreq(os.path.join(tempfile.gettempdir(),
+                                            "_freq_selftest.json"))
+    except Exception:
+        pass
+    ok_hook = app.start()
+    print(f"  钩子安装: {'OK' if ok_hook else 'FAIL'}")
+
+    cases = [
+        ("другу", True, 6),
+        ("хочу", True, 6),
+        ("я", False, 0),
+        ("привет мир", True, 6),
+        ("привет мир ", False, 0),   # 打完空格后应当收起
+    ]
+    app.root.after(40, app.pump)
+    results = []
+    for text, should_show, min_items in cases:
+        app.q.put(("text", text))
+        for _ in range(40):                 # 推进 Tk 事件循环，等 debounce 触发
+            app.root.update()
+            time.sleep(0.02)
+        shown = app.bar.visible
+        n = len(app.eng.suggest(current_word(text))["items"])
+        ok = (shown == should_show) and (n >= min_items or not should_show)
+        results.append((text, shown, n, ok))
+        print(f"  输入 {text!r:20} 候选条显示={shown}  条目={n}  "
+              f"{'PASS' if ok else 'FAIL'}")
+        app.q.put(("word", current_word(text)))
+
+    app.stop()
+    app.root.destroy()
+    passed = sum(1 for r in results if r[3])
+    print(f"\n  管线 {passed}/{len(results)} 通过")
+    return passed == len(results)
+
+
+def accept_selftest():
+    """验证「点候选词 → 目标输入框内容被替换」，并检查点击没抢走焦点。"""
+    from pynput.mouse import Button, Controller as Ms
+    import win32gui
+
+    print("P1-b 接受建议自测")
+    app = App(require_lang=None)
+    app.start()
+
+    tw = tk.Toplevel(app.root)
+    tw.title("target-4f81")
+    tw.geometry("620x130+520+540")
+    ent = tk.Entry(tw, font=("Consolas", 20), width=34)
+    ent.pack(padx=16, pady=34)
+    tw.attributes("-topmost", True)
+    tw.update()
+    tw.lift()
+    tw.focus_force()
+    tw.update()
+    ent.focus_force()
+    tw.update()
+    time.sleep(0.6)
+
+    ok_all = True
+    ms = Ms()
+
+    def case(typed, pick_form, expect):
+        nonlocal ok_all
+        # 安全闸：前台必须是我们的测试窗口，否则注入会打进用户的其他程序
+        fg_title = win32gui.GetWindowText(win32gui.GetForegroundWindow())
+        if "target-4f81" not in fg_title:
+            print(f"  ⛔ 前台是 {fg_title[:30]!r}，不是测试窗口，放弃本用例")
+            ok_all = False
+            return
+        ent.delete(0, "end")
+        ent.insert(0, typed)
+        ent.icursor("end")
+        tw.update()
+        time.sleep(0.15)
+
+        app.hook.buffer = typed
+        data = app.eng.suggest(typed)
+        app.bar.render(data)
+        app.bar.show_at(120, 120)      # 远离目标输入框，避免点击时误伤
+        app.root.update()
+        time.sleep(0.25)
+
+        target = None
+        for cell, it in app.bar.cells:
+            if it["form"] == pick_form:
+                target = cell
+                break
+        if target is None:
+            print(f"  找不到候选 {pick_form}")
+            ok_all = False
+            return
+
+        x = target.winfo_rootx() + target.winfo_width() // 2
+        y = target.winfo_rooty() + target.winfo_height() // 2
+        under = win32gui.GetAncestor(win32gui.WindowFromPoint((x, y)), 2)
+        if under != app.bar.hwnd():
+            print(f"  ⛔ 坐标 ({x},{y}) 不属于候选条，放弃点击")
+            ok_all = False
+            return
+
+        fg_before = win32gui.GetForegroundWindow()
+        ms.position = (x, y)
+        time.sleep(0.15)
+        ms.click(Button.left, 1)
+        for _ in range(30):
+            app.root.update()
+            time.sleep(0.02)
+        time.sleep(0.15)
+        for _ in range(20):
+            app.root.update()
+            time.sleep(0.02)
+
+        got = ent.get()
+        fg_after = win32gui.GetForegroundWindow()
+        focus_kept = (fg_after == fg_before)
+        allok = (got == expect) and focus_kept
+        ok_all = ok_all and allok
+        print(f"  输入 {typed!r:10} 点 {pick_form!r:10} -> 结果 {got!r:12} "
+              f"期望 {expect!r:12} 焦点保持={focus_kept}  "
+              f"{'PASS' if allok else 'FAIL'}")
+
+    case("другу", "друга", "друга")
+    case("другу", "другом", "другом")
+    case("Другу", "друга", "Друга")     # 首字母大写要保留
+    case("хочу", "хочешь", "хочешь")
+
+    app.hook.stop()
+    tw.destroy()
+    app.root.destroy()
+    print(f"\n  接受建议: {'全部通过' if ok_all else '有失败项'}")
+    return ok_all
+
+
+def main():
+    # 第一件事就写日志：只要这个文件被启动过，就一定留痕
+    log("=" * 58)
+    log(f"[启动] python={sys.executable}")
+    log(f"[启动] cwd={os.getcwd()}")
+    log(f"[启动] 参数={' '.join(sys.argv[1:]) or '(无)'}")
+    try:
+        _run_main()
+    except SystemExit:
+        raise
+    except Exception:
+        import traceback
+        log("[FATAL] 启动失败:\n        " +
+            traceback.format_exc().replace("\n", "\n        "))
+        raise
+
+
+def _run_main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--lang", default="ru", choices=["ru", "none"])
+    ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--accept-selftest", action="store_true")
+    ap.add_argument("--font-size", type=int, default=None,
+                    help="固定候选条字号（像素）；默认跟随正文光标高度")
+    ap.add_argument("--wordbook", action="store_true",
+                    help="只打开生词本窗口，不启动输入助手")
+    ap.add_argument("--lookup", nargs="?", const="", default=None,
+                    help="打开形式词典，可带一个词，如 --lookup другу")
+    a = ap.parse_args()
+
+    if a.wordbook:
+        from wordbook import WordBook
+        WordBook().show_window()
+        return
+
+    if a.lookup is not None:
+        import lookup
+        root = tk.Tk()
+        root.withdraw()
+        lookup.show_lookup(root, engine_mod.Engine(), a.lookup or "")
+        root.mainloop()
+        return
+
+    if a.accept_selftest:
+        sys.exit(0 if accept_selftest() else 1)
+    if a.selftest:
+        sys.exit(0 if selftest() else 1)
+
+    lang = LANG_RU if a.lang == "ru" else None
+
+    # 配置：命令行 > settings.json > 默认
+    cfg = (path_mod.SETTINGS_FILE if path_mod
+           else os.path.join(HERE, "settings.json"))
+    cfg_data = {}
+    if os.path.exists(cfg):
+        try:
+            import json
+            with open(cfg, encoding="utf-8-sig") as fh:
+                cfg_data = json.load(fh) or {}
+        except Exception as e:
+            log(f"[配置] settings.json 读取失败: {e}")
+
+    fs = a.font_size
+    if fs is None and cfg_data.get("font_size"):
+        fs = int(cfg_data["font_size"])
+        log(f"[配置] 从 settings.json 读到字号 {fs}px")
+    if fs:
+        log(f"[配置] 候选条字号固定为 {fs}px")
+    else:
+        log("[配置] 候选条字号自动跟随正文")
+
+    app = App(require_lang=lang, verbose=True, font_override=fs)
+
+    extra = cfg_data.get("exclude_apps") or []
+    if extra:
+        app.exclude |= {str(x).strip().lower() for x in extra if str(x).strip()}
+    log(f"[配置] 排除程序（不弹候选条）: {sorted(app.exclude)}")
+
+    ls = installed_layouts()
+    log("=" * 58)
+    log(f" 已安装键盘布局: {[f'0x{x:04X}' for x in ls]}")
+    if LANG_RU not in ls:
+        log(" ❌ 没装俄语布局！先添加：设置 → 时间和语言 → 语言和区域")
+        log("    → 添加语言 → 俄语 → 装好后按 Win+空格 切换")
+    else:
+        log(" ✅ 俄语布局已安装 (0x0419)")
+    log(f" 当前前台窗口: {foreground_title()!r}")
+    log(f" 当前布局: 0x{foreground_lang():04X}")
+    log(f" 布局过滤: {'仅俄语' if lang else '关闭（任何布局都响应）'}")
+    try:
+        dpi = user32.GetDpiForSystem()
+    except Exception:
+        dpi = 96
+    log(f" 系统 DPI: {dpi}（缩放 {dpi / 96:.0%}）| "
+        f"系统 UI 字体: {system_ui_font_px()}px | 候选条下限: {min_font_px()}px")
+    log(f" 日志文件: {LOGFILE}")
+
+    if not app.start():
+        log(" ❌ 键盘钩子安装失败")
+        sys.exit(1)
+    log(" ✅ 钩子已安装")
+    log("=" * 58)
+    log(" 用法：切到俄语布局 → 在任意输入框打俄语 → 停 0.3 秒看候选条")
+    log(" 退出：Ctrl+C")
+    try:
+        app.run()
+    except KeyboardInterrupt:
+        log("退出中…")
+    finally:
+        app.stop()
+
+
+if __name__ == "__main__":
+    main()

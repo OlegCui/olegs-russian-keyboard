@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# 运行时产生的用户数据（绝不入库）
+app.log
+launcher.log
+user_freq.json
+wordbook.json
+生词本.md
+*.tmp
+
+# 内部报告（含个人路径和窗口标题）
+P0-REPORT.md
+p1/P1A-REPORT.md
+p1/P1B-REPORT.md
+
+# 临时与抓取
+data/wiki_ru.txt
+data/rus_sentences.tsv.bz2
+_*.json
+_*.md
+_*.txt
+*.bak
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
