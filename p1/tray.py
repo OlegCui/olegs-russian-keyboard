@@ -43,6 +43,34 @@ def _make_image(size=64):
     return img
 
 
+_IMAGES = {}
+
+
+def _images():
+    """返回 (就绪图, 待命图)。待命图调暗，一眼看出没在工作。"""
+    if not _IMAGES:
+        from PIL import ImageEnhance
+        active = _make_image()
+        _IMAGES["active"] = active
+        _IMAGES["idle"] = ImageEnhance.Brightness(active).enhance(0.45)
+    return _IMAGES["active"], _IMAGES["idle"]
+
+
+def set_active(app, active):
+    """切换托盘图标状态（俄语布局=亮，其他=暗）。"""
+    icon = getattr(app, "tray_icon", None)
+    if icon is None:
+        return
+    try:
+        act, idle = _images()
+        icon.icon = act if active else idle
+        ver = getattr(app, "version", "")
+        icon.title = (f"Oleg's Russian Keyboard v{ver}"
+                      + ("" if active else "（待命 · 非俄语布局）"))
+    except Exception:
+        pass
+
+
 def start(app):
     """启动托盘。返回 icon 对象（或 None 表示失败）。"""
     try:
@@ -73,6 +101,9 @@ def start(app):
     def on_rules(icon=None, item=None):
         ui(app.open_rules)
 
+    def on_show_pill(icon=None, item=None):
+        ui(app.show_pill)
+
     def on_logs(icon=None, item=None):
         try:
             d = os.path.dirname(app.logpath)
@@ -98,6 +129,7 @@ def start(app):
         MenuItem("生词本…", on_wordbook),
         MenuItem("查词…", on_lookup),
         MenuItem("编辑规则卡…", on_rules),
+        MenuItem("显示状态条", on_show_pill),
         Menu.SEPARATOR,
         MenuItem("打开日志文件夹", on_logs),
         MenuItem("退出", on_quit),
@@ -107,5 +139,6 @@ def start(app):
                         f"Oleg's Russian Keyboard v{ver}", menu)
     t = threading.Thread(target=icon.run, name="tray", daemon=True)
     t.start()
+    app.tray_icon = icon
     app.log("[tray] 托盘已启动")
     return icon

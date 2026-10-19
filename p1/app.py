@@ -45,7 +45,7 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 
 # 这些程序里一律不弹候选条（密码管理器）
 DEFAULT_EXCLUDE = {
@@ -263,10 +263,9 @@ class Bar:
     def show_at(self, x, y):
         w = self.win.winfo_reqwidth()
         h = self.win.winfo_reqheight()
-        sw = self.win.winfo_screenwidth()
-        sh = self.win.winfo_screenheight()
-        x = max(4, min(int(x), sw - w - 4))
-        y = max(4, min(int(y), sh - h - 4))
+        l, t, r, b = work_area()
+        x = max(l + 4, min(int(x), r - w - 4))
+        y = max(t + 4, min(int(y), b - h - 4))
         self.win.geometry(f"{w}x{h}+{x}+{y}")
         self.win.deiconify()
         make_no_activate(self.win)     # 每次显示后重刷，防止被 Tk 重置
@@ -279,9 +278,13 @@ class Bar:
 
 
 class StatusPill:
-    """右上角常驻状态条：一眼看出程序在不在跑、有没有收到按键。"""
+    """屏幕底部居中的轻量状态条：几秒后自动消失，右键有菜单。"""
 
-    def __init__(self, root):
+    def __init__(self, root, app=None):
+        self.root = root
+        self.app = app
+        self._hide_job = None
+        self._hover = False
         self.win = tk.Toplevel(root)
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
@@ -296,29 +299,92 @@ class StatusPill:
         self.label = tk.Label(self.frame, text="启动中…", bg=self.bg,
                               fg="#c8d0d8", font=("Microsoft YaHei", 8))
         self.label.pack(side="left", padx=(0, 8), pady=5)
-        self._no_activate()
-        self.win.deiconify()
-        self.set("俄语助手 已启动 · 等按键", None)
 
-    def _no_activate(self):
+        for w in (self.win, self.frame, self.dot, self.label):
+            w.bind("<Button-3>", self._menu)
+            w.bind("<Button-1>", self._click)
+            w.bind("<Enter>", self._on_enter)
+            w.bind("<Leave>", self._on_leave)
+        self.win.protocol("WM_DELETE_WINDOW", self.hide)
+
         make_no_activate(self.win)
+        self.win.deiconify()
+        self.set("已启动 · 右键这里可退出", None, autohide=9000)
 
-    def set(self, text, ok=None):
+    # ---------- 位置：桌面工作区底部居中 ----------
+    def _place(self):
+        self.win.update_idletasks()
+        w = self.win.winfo_reqwidth()
+        h = self.win.winfo_reqheight()
+        l, t, r, b = work_area()
+        x = l + max(0, (r - l - w) // 2)
+        y = b - h - 24
+        self.win.geometry(f"{w}x{h}+{x}+{y}")
+
+    # ---------- 显示 / 隐藏 ----------
+    def set(self, text, ok=None, autohide=6000):
+        try:
+            self.update_text(text, ok)
+            self.win.deiconify()
+            self._place()
+            make_no_activate(self.win)
+            if autohide:
+                self._schedule_hide(autohide)
+            if not getattr(self, "_logged", False):
+                self._logged = True
+                log(f"[pill] 状态条已显示 {self.win.geometry()}")
+        except Exception:
+            pass
+
+    def update_text(self, text, ok=None):
         try:
             self.label.config(text=text)
             self.dot.config(fg="#4caf50" if ok is True else
                             ("#ff6b6b" if ok is False else "#ffb74d"))
-            self.win.update_idletasks()
-            w = self.win.winfo_reqwidth()
-            sw = self.win.winfo_screenwidth()
-            self.win.geometry(f"+{max(0, sw - w - 12)}+8")
-            if not getattr(self, "_logged", False):
-                self._logged = True
-                log(f"[pill] 右上角状态条已显示 {self.win.geometry()}")
         except Exception:
             pass
 
+    def hide(self):
+        self._cancel_hide()
+        try:
+            self.win.withdraw()
+        except Exception:
+            pass
+
+    def _schedule_hide(self, ms):
+        self._cancel_hide()
+        try:
+            self._hide_job = self.win.after(ms, self.hide)
+        except Exception:
+            pass
+
+    def _cancel_hide(self):
+        if self._hide_job is not None:
+            try:
+                self.win.after_cancel(self._hide_job)
+            except Exception:
+                pass
+            self._hide_job = None
+
+    def _on_enter(self, _e=None):
+        self._hover = True
+        self._cancel_hide()
+
+    def _on_leave(self, _e=None):
+        self._hover = False
+        self._schedule_hide(2500)
+
+    def _click(self, _e=None):
+        if self.app is not None:
+            self.app.show_menu(self.win, _e.x_root if _e else 0,
+                               _e.y_root if _e else 0)
+
+    def _menu(self, e):
+        if self.app is not None:
+            self.app.show_menu(self.win, e.x_root, e.y_root)
+
     def destroy(self):
+        self._cancel_hide()
         try:
             self.win.destroy()
         except Exception:
@@ -483,6 +549,23 @@ def font_from_wm_getfont():
     return 0
 
 
+class RECT(ctypes.Structure):
+    _fields_ = [("left", wt.LONG), ("top", wt.LONG),
+                ("right", wt.LONG), ("bottom", wt.LONG)]
+
+
+def work_area():
+    """Windows 桌面工作区（已排除任务栏）。比 winfo_screen* 更靠谱。"""
+    try:
+        r = RECT()
+        if user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0):
+            if r.right > r.left and r.bottom > r.top:
+                return (r.left, r.top, r.right, r.bottom)
+    except Exception:
+        pass
+    return (0, 0, user32.GetSystemMetrics(0), user32.GetSystemMetrics(1))
+
+
 def foreground_exe():
     """前台程序的可执行文件名（小写）。"""
     try:
@@ -570,13 +653,14 @@ class App:
         self._wb_win = None
         self.exclude = set(DEFAULT_EXCLUDE)
         self._skip_seen = set()
+        self.layout_ru = None
         try:
             from wordbook import WordBook
             self.wb = WordBook()
         except Exception as e:
             log(f"[wordbook] 初始化失败: {e}")
             self.wb = None
-        self.pill = StatusPill(self.root)
+        self.pill = StatusPill(self.root, self)
         self.hook = hook_mod.KeyboardCapture(
             on_text=lambda t: self.q.put(("text", t)),
             on_word=lambda w: self.q.put(("word", w)),
@@ -698,7 +782,7 @@ class App:
                           case=top.get("case_zh") or "",
                           app=foreground_title())
         msg = "已加入生词本" if new else "已在生词本（次数 +1）"
-        self.pill.set(f"{msg}：{word}", True)
+        self.pill.set(f"{msg}：{word}", True, autohide=3000)
         log(f"[wordbook] {word} lemma={top.get('lemma')} new={new} "
             f"共 {len(self.wb)} 词")
 
@@ -706,15 +790,66 @@ class App:
         """给托盘等其他模块用的日志入口。"""
         log(msg)
 
+    def _watch_layout(self):
+        """盯着前台键盘布局：切到俄语就就绪，切走就待命。"""
+        try:
+            if not self.paused:
+                lang = foreground_lang()
+                is_ru = (lang == LANG_RU)
+                if is_ru != self.layout_ru:
+                    self.layout_ru = is_ru
+                    self._on_layout(is_ru, lang)
+        except Exception:
+            pass
+        try:
+            self.root.after(500, self._watch_layout)
+        except Exception:
+            pass
+
+    def _on_layout(self, is_ru, lang):
+        log(f"[layout] 前台布局 -> {'俄语 0x0419' if is_ru else f'0x{lang:04X}'}")
+        if is_ru:
+            self.pill.set("俄语布局 · 助手已就绪", True, autohide=2500)
+        else:
+            self.bar.hide()
+            self.pill.set(f"布局 0x{lang:04X} · 助手待命", None, autohide=2000)
+        if self.tray is not None:
+            try:
+                import tray
+                tray.set_active(self, is_ru)
+            except Exception:
+                pass
+
+    def show_menu(self, parent, x, y):
+        """状态条的右键菜单（托盘看不到时的备用出口）。"""
+        try:
+            m = tk.Menu(parent, tearoff=0)
+            m.add_command(label="▶ 继续" if self.paused else "⏸ 暂时关闭",
+                          command=lambda: self.set_paused(not self.paused))
+            m.add_separator()
+            m.add_command(label="生词本…", command=self.open_wordbook)
+            m.add_command(label="查词…", command=self.open_lookup_window)
+            m.add_command(label="编辑规则卡…", command=self.open_rules)
+            m.add_separator()
+            m.add_command(label="隐藏状态条", command=self.pill.hide)
+            m.add_separator()
+            m.add_command(label="退出", command=self.quit)
+            m.tk_popup(x, y)
+        except Exception as e:
+            log(f"[menu] 菜单打开失败: {e}")
+
+    def show_pill(self):
+        self.pill.set(f"运行中 v{VERSION} · 右键这里可退出", True, autohide=6000)
+
     def set_paused(self, p):
         """托盘开关：暂停后钩子完全不处理按键。"""
         self.paused = bool(p)
         self.hook.set_enabled(not self.paused)
         if self.paused:
             self.bar.hide()
-            self.pill.set("已暂停 · 从托盘恢复", False)
+            self.pill.set("已暂停 · 右键状态条恢复", False, autohide=4000)
         else:
-            self.pill.set("俄语助手 运行中", True)
+            self.pill.set("已恢复", True, autohide=3000)
         log(f"[state] {'暂停' if self.paused else '继续'}")
 
     def open_rules(self):
@@ -728,7 +863,7 @@ class App:
                 shutil.copyfile(paths.RULES_FILE, target)
                 log(f"[rules] 已复制默认规则到 {target}")
             subprocess.Popen(["notepad.exe", target])
-            self.pill.set("已打开规则卡，改完重启生效", True)
+            self.pill.set("已打开规则卡，改完重启生效", True, autohide=4000)
         except Exception as e:
             log(f"[rules] 打开失败: {e}")
 
@@ -906,6 +1041,7 @@ class App:
 
     def run(self):
         self.root.after(40, self.pump)
+        self.root.after(600, self._watch_layout)
         self.root.after(6000, self._heartbeat)
         try:
             import tray
@@ -916,12 +1052,13 @@ class App:
 
     def _heartbeat(self):
         if self.key_count == 0:
-            self.pill.set("已启动 · 还没收到按键（布局是吗？）", False)
+            self.pill.update_text("已启动 · 还没收到按键（布局是吗？）", False)
             log(f"[心跳] 还没收到任何按键 | 前台={foreground_title()!r} "
                 f"布局=0x{foreground_lang():04X}")
             log("        如果这时你正在打字，说明钩子没收到——把 app.log 发我")
         else:
-            self.pill.set(f"运行中 v{VERSION} · 已收 {self.key_count} 键", True)
+            self.pill.update_text(
+                f"运行中 v{VERSION} · 已收 {self.key_count} 键", True)
         self.root.after(6000, self._heartbeat)
 
     def stop(self):
