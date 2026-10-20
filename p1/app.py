@@ -51,7 +51,7 @@ WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
 VERBOSE = False          # 由 main() 按 --verbose 设置
-VERSION = "0.7.0"
+VERSION = "0.7.1"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -1186,7 +1186,7 @@ class App:
                     pass
             if self.wb is None:
                 return
-            self._wb_win = self.wb.show_window(self.root, self.eng)
+            self._wb_win = self.wb.show_window(self.root, self.eng, examples=self.examples)
         except Exception:
             import traceback
             log("[wordbook] 打开失败:\n        " +

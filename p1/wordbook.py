@@ -190,17 +190,17 @@ class WordBook:
             print(f"[wordbook] 导出 md 失败: {e}", file=__import__("sys").stderr)
 
     # ---------- 查看窗口（列表 + 词形详情） ----------
-    def show_window(self, root=None, eng=None):
+    def show_window(self, root=None, eng=None, examples=None):
         import tkinter as tk
         import tkinter.ttk as ttk
         from tkinter import messagebox
         own = root is None
         win = tk.Toplevel(root) if root else tk.Tk()
         win.title(f"生词本 · {len(self.words)} 词")
-        win.geometry("1000x620+240+120")
+        win.geometry("1060x660+240+110")
 
         try:
-            ttk.Style(win).theme_use("vista")     # 原生 Windows 控件外观
+            ttk.Style(win).theme_use("vista")
         except Exception:
             pass
 
@@ -211,28 +211,48 @@ class WordBook:
             except Exception:
                 eng = None
 
-        bar = tk.Frame(win)
-        bar.pack(fill="x", padx=12, pady=10)
-        tk.Label(bar, text=f"共 {len(self.words)} 个词",
+        if examples is None:
+            try:
+                import paths as _p
+                from examples import Examples
+                examples = Examples(getattr(_p, "EXAMPLES_FILE", None))
+            except Exception:
+                examples = None
+
+        # ---------- 顶部：统计 + 搜索 + 分组 ----------
+        top = tk.Frame(win)
+        top.pack(fill="x", padx=12, pady=(10, 6))
+
+        stat = self.review_stats()
+        tk.Label(top, text=f"共 {stat['total']} 词 · 待复习 {stat['due']} · "
+                           f"已掌握 {stat['learned']}",
                  font=("Microsoft YaHei UI", 10)).pack(side="left")
-        tk.Label(bar, text=f"  导出: {self.md_path}",
-                 fg="#888", font=("Microsoft YaHei UI", 8)).pack(side="left")
+
+        self._query = tk.StringVar()
+        self._group = tk.StringVar(value="全部")
+        combo = ttk.Combobox(top, textvariable=self._group, width=10,
+                             state="readonly",
+                             values=("全部", "待复习", "按词性", "按日期"))
+        combo.pack(side="right", padx=(8, 0))
+        ent = tk.Entry(top, textvariable=self._query, width=22,
+                       font=("Segoe UI", 11), relief="solid", bd=1,
+                       highlightthickness=0)
+        ent.pack(side="right", ipady=3)
+        tk.Label(top, text="搜索", font=("Microsoft YaHei UI", 9)).pack(side="right", padx=(0, 6))
 
         paned = tk.PanedWindow(win, orient="horizontal", sashwidth=6)
-        paned.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        paned.pack(fill="both", expand=True, padx=12, pady=(0, 8))
 
-        # 左：词表
         left = tk.Frame(paned)
         sb = ttk.Scrollbar(left)
         sb.pack(side="right", fill="y")
         lb = tk.Listbox(left, font=("Segoe UI", 12), yscrollcommand=sb.set,
-                        width=42, activestyle="none", relief="solid", bd=1,
+                        width=44, activestyle="none", relief="solid", bd=1,
                         highlightthickness=0)
         lb.pack(side="left", fill="both", expand=True)
         sb.config(command=lb.yview)
-        paned.add(left, minsize=280)
+        paned.add(left, minsize=300)
 
-        # 右：词形详情
         right = tk.Frame(paned)
         dsb = ttk.Scrollbar(right)
         dsb.pack(side="right", fill="y")
@@ -241,27 +261,85 @@ class WordBook:
                          padx=10, pady=8, highlightthickness=0)
         detail.pack(side="left", fill="both", expand=True)
         dsb.config(command=detail.yview)
-        paned.add(right, minsize=380)
+        paned.add(right, minsize=400)
 
-        def refresh():
+        view = []          # 当前列表里显示的词条，和 Listbox 顺序一一对应
+
+        def wanted():
+            q = (self._query.get() or "").strip().lower()
+            group = self._group.get()
+            now = time.time()
+            rows = []
+            for it in reversed(self.words):          # 新的在前
+                if q and q not in it.get("word", "").lower() \
+                        and q not in (it.get("lemma") or "").lower():
+                    continue
+                if group == "待复习" and it.get("due", 0) > now:
+                    continue
+                rows.append(it)
+            return rows
+
+        def label_of(it):
+            tag = " · ".join(x for x in [it.get("pos"), it.get("case")] if x)
+            due = it.get("due", 0)
+            now = time.time()
+            if due <= now:
+                mark = "●"                       # 到期
+            else:
+                days = max(1, int(round((due - now) / 86400)))
+                mark = f"{days}d"
+            return (f"{mark:<4} {it['word']:<15} {(it.get('lemma') or ''):<15} "
+                    f"{tag:<12} ×{it.get('count', 1)}")
+
+        def refresh(keep=None):
+            view.clear()
             lb.delete(0, "end")
-            for it in reversed(self.words):
-                tag = " · ".join(x for x in [it.get("pos"), it.get("case")] if x)
-                lb.insert("end", f"{it['word']:<16} {it.get('lemma', ''):<16} "
-                                 f"{tag:<12} ×{it.get('count', 1)}")
-            win.title(f"生词本 · {len(self.words)} 词")
+            group = self._group.get()
+            rows = wanted()
+            if group in ("按词性", "按日期"):
+                def key(it):
+                    if group == "按词性":
+                        return (it.get("pos") or "未分类", -it.get("added", 0))
+                    return (time.strftime("%Y-%m-%d", time.localtime(
+                        it.get("added", 0))), it.get("word", ""))
+                rows.sort(key=key)
+                last = None
+                for it in rows:
+                    head = (it.get("pos") or "未分类") if group == "按词性" \
+                        else time.strftime("%Y-%m-%d",
+                                           time.localtime(it.get("added", 0)))
+                    if head != last:
+                        lb.insert("end", f"── {head} ──")
+                        view.append(None)
+                        last = head
+                    lb.insert("end", label_of(it))
+                    view.append(it)
+            else:
+                for it in rows:
+                    lb.insert("end", label_of(it))
+                    view.append(it)
+            win.title(f"生词本 · {len(self.words)} 词"
+                      f"（显示 {sum(1 for x in view if x)}）")
+            if keep:
+                for i, it in enumerate(view):
+                    if it and it.get("word") == keep:
+                        lb.selection_clear(0, "end")
+                        lb.selection_set(i)
+                        lb.see(i)
+                        break
 
-        def current_word():
+        def current_item():
             sel = lb.curselection()
             if not sel:
                 return None
-            idx = len(self.words) - 1 - sel[0]
-            return self.words[idx]["word"]
+            i = sel[0]
+            return view[i] if i < len(view) else None
 
-        def show_detail(word=None):
-            w = word or current_word()
-            if not w:
+        def show_detail(item=None):
+            it = item or current_item()
+            if not it:
                 return
+            w = it.get("word", "")
             txt = ""
             if eng is not None:
                 try:
@@ -271,6 +349,23 @@ class WordBook:
                     txt = f"（词典加载失败: {e}）"
             else:
                 txt = "（形态引擎未就绪）"
+            sent = ""
+            if examples is not None:
+                try:
+                    sent = examples.get(it.get("lemma") or w,
+                                        getattr(eng, "morph", None))
+                except Exception:
+                    sent = ""
+            if sent:
+                txt += f"\n\n例句\n────\n{sent}\n"
+            if it.get("due"):
+                import datetime
+                when = datetime.datetime.fromtimestamp(it["due"])
+                txt += (f"\n复习\n────\n"
+                        f"下次到期 {when.strftime('%Y-%m-%d %H:%M')}\n"
+                        f"间隔 {it.get('interval', 0)} 天 · "
+                        f"已复习 {it.get('reps', 0)} 次 · "
+                        f"忘记 {it.get('lapses', 0)} 次\n")
             detail.config(state="normal")
             detail.delete("1.0", "end")
             detail.insert("1.0", txt)
@@ -280,35 +375,52 @@ class WordBook:
             show_detail()
 
         def on_delete():
-            w = current_word()
-            if not w:
+            it = current_item()
+            if not it:
                 return
-            self.remove(w)
+            self.remove(it.get("word", ""))
             refresh()
-            detail.config(state="normal")
-            detail.delete("1.0", "end")
-            detail.config(state="disabled")
 
         def on_export():
             self.export_md()
             messagebox.showinfo("导出", f"已导出到\n{self.md_path}")
 
+        def on_anki():
+            p = self.export_anki()
+            if p:
+                messagebox.showinfo("Anki", f"已导出到\n{p}")
+
+        def on_review():
+            try:
+                import review as rv
+                win_ = rv.open_review(win, self, eng=eng, examples=examples,
+                                     on_done=lambda n: refresh())
+                if win_ is None:
+                    messagebox.showinfo("复习", "现在没有到期的词。")
+                else:
+                    win_.win.bind("<Destroy>", lambda e: refresh())
+            except Exception as e:
+                messagebox.showerror("复习", str(e))
+
         lb.bind("<<ListboxSelect>>", on_select)
         lb.bind("<Double-Button-1>", lambda e: show_detail())
+        ent.bind("<KeyRelease>", lambda e: refresh())
+        combo.bind("<<ComboboxSelected>>", lambda e: refresh())
 
         btns = tk.Frame(win)
         btns.pack(fill="x", padx=12, pady=(0, 12))
-        ttk.Button(btns, text="删除选中", command=on_delete).pack(side="left")
-        ttk.Button(btns, text="重新导出 Markdown", command=on_export
-                   ).pack(side="left", padx=8)
+        ttk.Button(btns, text="复习到期", command=on_review).pack(side="left")
+        ttk.Button(btns, text="删除选中", command=on_delete).pack(side="left", padx=8)
+        ttk.Button(btns, text="导出 Markdown", command=on_export).pack(side="left")
+        ttk.Button(btns, text="导出 Anki", command=on_anki).pack(side="left", padx=8)
+        tk.Label(btns, text="● 会到期  ·  5d 表示 5 天后", fg="#888",
+                 font=("Microsoft YaHei UI", 8)).pack(side="right")
 
         refresh()
-        if self.words:
+        if view:
             lb.selection_set(0)
-            lb.activate(0)
             show_detail()
 
-        # 主窗口是 withdraw 的，Toplevel 可能被别的程序压在后面，主动置前
         try:
             win.deiconify()
             win.attributes("-topmost", True)
@@ -321,7 +433,6 @@ class WordBook:
         if own:
             win.mainloop()
         return win
-
 
 if __name__ == "__main__":
     import sys
