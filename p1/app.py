@@ -45,7 +45,7 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.1.9"
+VERSION = "0.1.10"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -680,16 +680,24 @@ class App:
         )
 
     def _maybe_intercept(self, vk):
-        """候选条显示时截下导航键，不让它们打到目标程序。"""
+        """候选条显示时截下导航键；Ctrl+D / Ctrl+L 只要在打俄语就管。"""
+        ctrl = bool(user32.GetAsyncKeyState(0x11) & 0x8000)
+        # 这两个键候选条收起后也得管（条子 1.5 秒就自动隐藏了），
+        # 但不能在中文/英文布局下抢走浏览器的 Ctrl+D / Ctrl+L
+        if ctrl and vk in (0x44, 0x4C):
+            word = current_word(getattr(self.hook, "buffer", ""))
+            has_ru = any("\u0400" <= c <= "\u04FF" for c in word)
+            # 候选条可见 = 显然在打俄语，布局 ID 报错也认；
+            # 条子收起时必须真的在俄语布局，否则浏览器会丢快捷键
+            ru = (foreground_lang() == LANG_RU) or (self.bar.visible and has_ru)
+            if ru and word:
+                key = "D" if vk == 0x44 else "L"
+                log(f"[hotkey] Ctrl+{key} word={word!r}")
+                self.q.put(("save" if vk == 0x44 else "lookup", None))
+                return True
+            return False
         if not self.bar.visible:
             return False
-        ctrl = bool(user32.GetAsyncKeyState(0x11) & 0x8000)
-        if ctrl and vk == 0x44:              # Ctrl+D 加入生词本
-            self.q.put(("save", None))
-            return True
-        if ctrl and vk == 0x4C:              # Ctrl+L 查词
-            self.q.put(("lookup", None))
-            return True
         if vk == 0x1B:                       # Esc
             self.q.put(("hide", None))
             return True
