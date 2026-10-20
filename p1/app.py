@@ -51,7 +51,7 @@ WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
 VERBOSE = False          # 由 main() 按 --verbose 设置
-VERSION = "0.9.1"
+VERSION = "0.9.2"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -929,26 +929,48 @@ class App:
     def _maybe_intercept(self, vk):
         """候选条显示时截下导航键；Ctrl+D / Ctrl+L 只要在打俄语就管。"""
         ctrl = bool(user32.GetAsyncKeyState(0x11) & 0x8000)
-        # 这两个键候选条收起后也得管（条子 1.5 秒就自动隐藏了），
-        # 但不能在中文/英文布局下抢走浏览器的 Ctrl+D / Ctrl+L
+        shift = bool(user32.GetAsyncKeyState(0x10) & 0x8000)
+        # 这三个键候选条收起后也得管（条子 1.5 秒就自动隐藏了），
+        # 但不能在中文/英文布局下抢走浏览器的快捷键
         if ctrl and vk in (0x44, 0x4C):
             word = current_word(getattr(self.hook, "buffer", ""))
-            # 没在打字（或词是复制来的）→ 用剪贴板里的词
-            # 只在按这两个键时读一次剪贴板，不影响 Ctrl+V
             if not word:
                 # 词后面已经打了空格：查刚打完的那个词，比读剪贴板更符合直觉
                 word = previous_word(getattr(self.hook, "buffer", ""))
             if not word:
                 word = clipboard_word()
             has_ru = any("\u0400" <= c <= "\u04FF" for c in word)
-            # 候选条可见 = 显然在打俄语，布局 ID 报错也认；
-            # 条子收起时必须真的在俄语布局，否则浏览器会丢快捷键
-            ru = (foreground_lang() == LANG_RU) or (self.bar.visible and has_ru)
+
+            key = "D" if vk == 0x44 else "L"
+            # Ctrl+Shift+D：直接打开生词本（不存词）
+            if shift and vk == 0x44:
+                recent = (time.time() - getattr(self, "_last_text_at", 0)) < 120
+                ru = (foreground_lang() == LANG_RU) or (self.bar.visible
+                                                        or recent)
+                if ru:
+                    log("[hotkey] Ctrl+Shift+D 打开生词本")
+                    self.q.put(("wordbook", None))
+                    return True
+                log(f"[hotkey] 忽略 Ctrl+Shift+D（布局 {foreground_lang():#06x}，"
+                    f"最近没在打俄语）")
+                return False
+
+            # 判定"你是不是正在打俄语"：
+            # 1) 当前布局就是俄语 → 算
+            # 2) 候选条还开着，且缓冲/剪贴板里有西里尔字母 → 算
+            # 3) 30 秒内刚打过俄语（切到中文布局也会出现）→ 算
+            recent_ru = (time.time() - getattr(self, "_last_text_at", 0)) < 30
+            ru = (foreground_lang() == LANG_RU) or (
+                has_ru and (self.bar.visible or recent_ru))
             if ru and word:
-                key = "D" if vk == 0x44 else "L"
                 log(f"[hotkey] Ctrl+{key} word={word!r}")
                 self.q.put(("save" if vk == 0x44 else "lookup", word))
                 return True
+            # 不接管时留个痕：下次用户说"没反应"能直接看出原因
+            log(f"[hotkey] 忽略 Ctrl+{key}：布局={foreground_lang():#06x} "
+                f"条子={'开' if self.bar.visible else '关'} "
+                f"刚打字={'是' if recent_ru else '否'} "
+                f"西里尔={'是' if has_ru else '否'} 词={word!r}")
             return False
         if not self.bar.visible:
             return False
@@ -1034,6 +1056,8 @@ class App:
                     self._save_word(payload)
                 elif kind == "lookup":
                     self._open_lookup(payload)
+                elif kind == "wordbook":
+                    self.open_wordbook()
                 elif kind == "hide":
                     self.bar.hide()
                 elif kind == "ui":                 # 托盘线程投递过来的 UI 动作
@@ -1365,6 +1389,7 @@ class App:
             return False
 
     def _update(self, text):
+        self._last_text_at = time.time()
         """带计时的入口：卡顿超过 80ms 会写进日志，方便定位是哪一步慢。"""
         t0 = time.perf_counter()
         try:
