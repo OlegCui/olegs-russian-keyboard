@@ -195,19 +195,23 @@ python p1/app.py
 
 ```json
 {
-  "font_size": 22,
+  "theme": "dark",
+  "font_size": 28,
   "exclude_apps": ["game.exe", "some_app.exe"],
-  "font_px_by_app": { "msedge.exe": 24 }
+  "font_px_by_app": { "msedge.exe": 30 }
 }
 ```
 
-- `font_size`：候选条字号（像素）。**默认 22，固定不变，不跟随正文**
+- `theme`：**`dark`（默认）/ `light` / `auto`**，`auto` 跟随 Windows 的"应用模式"
+- `font_size`：候选条字号（像素）。**默认 28，固定不变，不跟随正文**
   （之前的"跟随正文"会在不同程序间忽大忽小，已废弃）
 - `exclude_apps`：这些程序里不弹候选条（密码管理器已默认排除）
 - `font_px_by_app`：按程序单独指定字号，优先级高于 `font_size`
 
-**调字号最省事的办法**：托盘图标右键 → **候选字号** → 增大 / 减小。
-改完立刻生效并自动写回 `settings.json`，不用重启。
+**换主题最省事的办法**：托盘图标右键 → **主题** → 深色 / 浅色 / 跟随系统，
+或者右键底部状态条选同一项。改完立刻生效并写回 `settings.json`。
+
+选中项的颜色跟着 **Windows 强调色**走（设置 → 个性化 → 颜色），不是写死的蓝。
 
 ### 候选条的顺序
 

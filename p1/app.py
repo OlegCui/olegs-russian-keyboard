@@ -49,7 +49,7 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -149,6 +149,44 @@ def _top_hwnd(win):
     return user32.GetAncestor(child, 2) or child
 
 
+THEMES = {
+    "dark": {
+        "bg": "#252525", "border": "#3d3d3d", "cell": "#323232",
+        "cell_hover": "#3d3d3d", "text": "#ffffff", "sub": "#a8a8a8",
+        "hint": "#7a7a7a", "warn_bg": "#332a1f", "warn_fg": "#ffb74d",
+        "dot": "#ffb74d", "pill": "#e6e6e6",
+    },
+    "light": {
+        "bg": "#f3f3f3", "border": "#d4d4d4", "cell": "#ffffff",
+        "cell_hover": "#e8e8e8", "text": "#1b1b1b", "sub": "#5c5c5c",
+        "hint": "#8a8a8a", "warn_bg": "#fff4e5", "warn_fg": "#8a5a00",
+        "dot": "#c77700", "pill": "#1b1b1b",
+    },
+}
+
+
+def system_is_light():
+    """Windows 系统是浅色还是深色（个性化 → 颜色）。"""
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        ) as k:
+            v, _ = winreg.QueryValueEx(k, "AppsUseLightTheme")
+            return bool(v)
+    except Exception:
+        return False
+
+
+def resolve_theme(name):
+    """'auto' 按系统来，其余原样返回（不认识就当深色）。"""
+    n = (name or "dark").lower()
+    if n == "auto":
+        return "light" if system_is_light() else "dark"
+    return n if n in THEMES else "dark"
+
+
 def round_corners(win):
     """Windows 11 圆角（DWMWA_WINDOW_CORNER_PREFERENCE = 33，ROUND = 2）。"""
     try:
@@ -193,7 +231,7 @@ def make_no_activate(win):
 class Bar:
     """悬浮候选条：无边框、置顶、**不抢焦点**（否则点选后没法往目标程序打字）。"""
 
-    def __init__(self, root):
+    def __init__(self, root, theme="dark"):
         self.visible = False
         self.last = None
         self.on_pick = None          # 点选回调：回调参数是该候选词
@@ -207,17 +245,30 @@ class Bar:
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
         self.win.withdraw()
-        # Windows 11 深色浮层配色
-        self.bg = "#252525"
-        self.border = "#3d3d3d"
-        self.cell_bg = "#323232"
-        self.cell_hover = "#3d3d3d"
         self.accent = accent_color()
-        self.win.configure(bg=self.bg)
-        self.outer = tk.Frame(self.win, bg=self.bg, highlightbackground=self.border,
-                              highlightthickness=1)
-        self.outer.pack(fill="both", expand=True)
+        self.outer = None
+        self.apply_theme(theme)
         make_no_activate(self.win)
+
+    def apply_theme(self, name):
+        """换主题：只改配色，控件结构不变。"""
+        self.theme = resolve_theme(name)
+        self.t = THEMES[self.theme]
+        self.bg = self.t["bg"]
+        self.border = self.t["border"]
+        self.cell_bg = self.t["cell"]
+        self.cell_hover = self.t["cell_hover"]
+        self.win.configure(bg=self.bg)
+        if self.outer is None:
+            self.outer = tk.Frame(self.win, bg=self.bg,
+                                  highlightbackground=self.border,
+                                  highlightthickness=1)
+            self.outer.pack(fill="both", expand=True)
+        else:
+            self.outer.configure(bg=self.bg, highlightbackground=self.border)
+        if self.visible and self.data:
+            self.render(self.data, keep_sel=True)
+            self.show_at(*self.last[:2])
 
     def hwnd(self):
         return _top_hwnd(self.win)
@@ -251,17 +302,17 @@ class Bar:
         head = tk.Frame(self.outer, bg=self.bg)
         head.pack(fill="x", padx=12, pady=(9, 2))
         tk.Label(head, text=data.get("lemma", data["token"]), bg=self.bg,
-                 fg="#ffffff",
+                 fg=self.t["text"],
                  font=("Segoe UI Semibold", -max(13, int(fs * 0.76)), "bold")
                  ).pack(side="left")
         cur = data.get("current") or {}
         tag = " · ".join(x for x in [cur.get("pos_zh"), cur.get("case_zh")] if x)
         if tag:
-            tk.Label(head, text="  " + tag, bg=self.bg, fg="#a8a8a8",
+            tk.Label(head, text="  " + tag, bg=self.bg, fg=self.t["sub"],
                      font=("Microsoft YaHei UI", -max(10, int(fs * 0.58)))
                      ).pack(side="left")
         tk.Label(head, text="空格选1 · 1-6 · ←/→ · Enter 保留",
-                 bg=self.bg, fg="#7a7a7a",
+                 bg=self.bg, fg=self.t["hint"],
                  font=("Microsoft YaHei UI", -max(9, int(fs * 0.5)))
                  ).pack(side="right")
 
@@ -274,11 +325,11 @@ class Bar:
                             cursor="hand2", highlightthickness=0)
             cell.pack(side="left", padx=3)
             l1 = tk.Label(cell, text=it["form"],
-                          bg=cell["bg"], fg="#ffffff",
+                          bg=cell["bg"], fg="#ffffff" if sel else self.t["text"],
                           font=("Segoe UI Semibold", -fs, "bold"))
             l1.pack(padx=max(10, int(fs * 0.7)), pady=(5, 0))
             l2 = tk.Label(cell, text=f"{i + 1}  {it['label']}", bg=cell["bg"],
-                          fg="#dcdcdc" if sel else "#a8a8a8",
+                          fg="#ffffff" if sel else self.t["sub"],
                           font=("Microsoft YaHei UI", -max(10, int(fs * 0.56))))
             l2.pack(padx=10, pady=(0, 5))
             for w in (cell, l1, l2):
@@ -294,13 +345,14 @@ class Bar:
         findings = data.get("findings") or []
         if findings:
             f = findings[0]
-            tk.Label(self.outer, text=f"⚠ {f['title']}", bg="#332a1f", fg="#ffb74d",
+            tk.Label(self.outer, text=f"⚠ {f['title']}", bg=self.t["warn_bg"],
+                     fg=self.t["warn_fg"],
                      font=("Microsoft YaHei UI", -max(10, int(fs * 0.58))),
                      anchor="w").pack(fill="x", padx=12, pady=(0, 6))
 
         hint = data.get("hint")
         if hint:
-            tk.Label(self.outer, text=hint, bg=self.bg, fg="#7a7a7a",
+            tk.Label(self.outer, text=hint, bg=self.bg, fg=self.t["hint"],
                      font=("Microsoft YaHei UI", -max(9, int(fs * 0.5))),
                      anchor="e").pack(fill="x", padx=12, pady=(0, 6))
 
@@ -346,7 +398,7 @@ class Bar:
 class StatusPill:
     """屏幕底部居中的轻量状态条：几秒后自动消失，右键有菜单。"""
 
-    def __init__(self, root, app=None):
+    def __init__(self, root, app=None, theme="dark"):
         self.root = root
         self.app = app
         self._hide_job = None
@@ -354,28 +406,39 @@ class StatusPill:
         self.win = tk.Toplevel(root)
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
-        self.bg = "#252525"
-        self.win.configure(bg=self.bg)
-        self.frame = tk.Frame(self.win, bg=self.bg, highlightbackground="#3d3d3d",
-                              highlightthickness=1)
-        self.frame.pack()
-        self.dot = tk.Label(self.frame, text="●", bg=self.bg, fg="#ffb74d",
-                            font=("Segoe UI", -12))
-        self.dot.pack(side="left", padx=(10, 4), pady=6)
-        self.label = tk.Label(self.frame, text="启动中…", bg=self.bg,
-                              fg="#e6e6e6", font=("Microsoft YaHei UI", -12))
-        self.label.pack(side="left", padx=(0, 10), pady=6)
-
-        for w in (self.win, self.frame, self.dot, self.label):
-            w.bind("<Button-3>", self._menu)
-            w.bind("<Button-1>", self._click)
-            w.bind("<Enter>", self._on_enter)
-            w.bind("<Leave>", self._on_leave)
-        self.win.protocol("WM_DELETE_WINDOW", self.hide)
-
+        self.frame = None
+        self.apply_theme(theme)
         make_no_activate(self.win)
         self.win.deiconify()
         self.set("已启动 · 右键这里可退出", None, autohide=9000)
+
+    def apply_theme(self, name):
+        self.theme = resolve_theme(name)
+        self.t = THEMES[self.theme]
+        self.bg = self.t["bg"]
+        self.win.configure(bg=self.bg)
+        if self.frame is None:
+            self.frame = tk.Frame(self.win, bg=self.bg,
+                                  highlightbackground=self.t["border"],
+                                  highlightthickness=1)
+            self.frame.pack()
+            self.dot = tk.Label(self.frame, text="●", bg=self.bg,
+                                fg=self.t["dot"], font=("Segoe UI", -12))
+            self.dot.pack(side="left", padx=(10, 4), pady=6)
+            self.label = tk.Label(self.frame, text="启动中…", bg=self.bg,
+                                  fg=self.t["pill"],
+                                  font=("Microsoft YaHei UI", -12))
+            self.label.pack(side="left", padx=(0, 10), pady=6)
+            for w in (self.win, self.frame, self.dot, self.label):
+                w.bind("<Button-3>", self._menu)
+                w.bind("<Button-1>", self._click)
+                w.bind("<Enter>", self._on_enter)
+                w.bind("<Leave>", self._on_leave)
+            self.win.protocol("WM_DELETE_WINDOW", self.hide)
+        else:
+            self.frame.configure(bg=self.bg, highlightbackground=self.t["border"])
+            self.dot.configure(bg=self.bg, fg=self.t["dot"])
+            self.label.configure(bg=self.bg, fg=self.t["pill"])
 
     # ---------- 位置：桌面工作区底部居中 ----------
     def _place(self):
@@ -729,7 +792,9 @@ class App:
         self.eng = engine_mod.Engine()
         self.root = tk.Tk()
         self.root.withdraw()
-        self.bar = Bar(self.root)
+        self.cfg_theme = "dark"          # dark / light / auto
+        self.theme = resolve_theme(self.cfg_theme)
+        self.bar = Bar(self.root, theme=self.theme)
         self.bar.on_pick = self._accept
         self._timer = None
         self._hide_timer = None
@@ -758,7 +823,7 @@ class App:
         except Exception as e:
             log(f"[wordbook] 初始化失败: {e}")
             self.wb = None
-        self.pill = StatusPill(self.root, self)
+        self.pill = StatusPill(self.root, self, theme=self.theme)
         self.hook = hook_mod.KeyboardCapture(
             on_text=lambda t: self.q.put(("text", t)),
             on_word=lambda w: self.q.put(("word", w)),
@@ -972,6 +1037,12 @@ class App:
             sub.add_command(label="减小 -2", command=lambda: self.bump_font(-2))
             sub.add_command(label="恢复默认", command=lambda: self.bump_font(0))
             m.add_cascade(label=f"候选字号（当前 {self.bar.font_px}px）", menu=sub)
+            tsub = tk.Menu(m, tearoff=0)
+            tsub.add_command(label="深色", command=lambda: self.apply_theme("dark"))
+            tsub.add_command(label="浅色", command=lambda: self.apply_theme("light"))
+            tsub.add_command(label="跟随系统",
+                             command=lambda: self.apply_theme("auto"))
+            m.add_cascade(label=f"主题（当前 {self.cfg_theme}）", menu=tsub)
             m.add_separator()
             m.add_command(label="隐藏状态条", command=self.pill.hide)
             m.add_separator()
@@ -1249,6 +1320,44 @@ class App:
         if reason not in self._skip_seen:
             self._skip_seen.add(reason)
             log(f"[skip] 在 {reason} 里不弹候选条")
+
+    def apply_theme(self, name, save=True):
+        """切换主题：dark / light / auto，立即生效并写进 settings.json。"""
+        self.cfg_theme = (name or "dark").lower()
+        try:
+            self.bar.apply_theme(self.cfg_theme)
+            self.pill.apply_theme(self.cfg_theme)
+        except Exception as e:
+            log(f"[theme] 切换失败: {e}")
+            return
+        real = resolve_theme(self.cfg_theme)
+        log(f"[theme] 主题={self.cfg_theme}（实际 {real}）")
+        try:
+            self.pill.set("主题：" + ("深色" if real == "dark" else "浅色")
+                          + ("（跟随系统）" if self.cfg_theme == "auto" else ""),
+                          True, autohide=2000)
+        except Exception:
+            pass
+        if save:
+            self._save_setting("theme", self.cfg_theme)
+
+    def _save_setting(self, key, value):
+        try:
+            import json
+            import paths
+            cfg = paths.SETTINGS_FILE
+            data = {}
+            if os.path.exists(cfg):
+                try:
+                    with open(cfg, encoding="utf-8-sig") as fh:
+                        data = json.load(fh) or {}
+                except Exception:
+                    data = {}
+            data[key] = value
+            with open(cfg, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log(f"[配置] 保存 {key} 失败: {e}")
 
     def bump_font(self, delta):
         """托盘里调字号：delta=0 恢复默认，否则 ±。会写进 settings.json。"""
@@ -1584,6 +1693,9 @@ def _run_main():
         app.font_by_app = {str(k).strip().lower(): int(v)
                            for k, v in fba.items() if v}
         log(f"[配置] 按程序指定字号: {app.font_by_app}")
+
+    app.apply_theme(cfg_data.get("theme", "dark"), save=False)
+    log(f"[配置] 主题={app.cfg_theme}（实际 {resolve_theme(app.cfg_theme)}）")
 
     if "auto_space" in cfg_data:
         app.auto_space = bool(cfg_data["auto_space"])

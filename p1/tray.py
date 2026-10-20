@@ -113,6 +113,15 @@ def start(app):
     def on_font_reset(icon=None, item=None):
         ui(lambda: app.bump_font(0))
 
+    def on_theme_dark(icon=None, item=None):
+        ui(lambda: app.apply_theme("dark"))
+
+    def on_theme_light(icon=None, item=None):
+        ui(lambda: app.apply_theme("light"))
+
+    def on_theme_auto(icon=None, item=None):
+        ui(lambda: app.apply_theme("auto"))
+
     def on_logs(icon=None, item=None):
         try:
             d = os.path.dirname(app.logpath)
@@ -142,6 +151,11 @@ def start(app):
             MenuItem("增大 +2", on_font_big),
             MenuItem("减小 -2", on_font_small),
             MenuItem("恢复默认", on_font_reset),
+        )),
+        MenuItem("主题", Menu(
+            MenuItem("深色", on_theme_dark),
+            MenuItem("浅色", on_theme_light),
+            MenuItem("跟随系统", on_theme_auto),
         )),
         MenuItem("显示状态条", on_show_pill),
         Menu.SEPARATOR,
