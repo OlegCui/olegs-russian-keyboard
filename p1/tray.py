@@ -32,7 +32,7 @@ def _make_image(size=64):
         font = ImageFont.truetype("segoeuib.ttf", int(size * 0.68))
     except Exception:
         font = None
-    text = "Я"
+    text = "O"          # 作者 Oleg 的首字母
     if font is not None:
         box = d.textbbox((0, 0), text, font=font)
         w, h = box[2] - box[0], box[3] - box[1]
