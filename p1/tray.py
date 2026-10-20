@@ -29,7 +29,7 @@ def _make_image(size=64):
                         fill=(31, 34, 38, 255))
     try:
         from PIL import ImageFont
-        font = ImageFont.truetype("segoeuib.ttf", int(size * 0.68))
+        font = ImageFont.truetype("segoeuib.ttf", int(size * 0.82))
     except Exception:
         font = None
     text = "O"          # 作者 Oleg 的首字母
