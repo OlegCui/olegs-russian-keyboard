@@ -31,7 +31,8 @@ VK_SPACE = 0x20
 VK_TAB = 0x09
 VK_PACKET = 0xE7
 
-SEPARATORS = set(" \t\r\n.,;:!?()\"«»—–-/\\")
+# 数字也算分隔符：俄语词里没有数字，粘进来会把词切断错
+SEPARATORS = set(" \t\r\n.,;:!?()\"«»—–-/\\0123456789")
 
 LRESULT = ctypes.c_ssize_t
 HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wt.WPARAM, wt.LPARAM)
@@ -95,9 +96,25 @@ class KeyboardCapture:
         hkl = user32.GetKeyboardLayout(tid)
         return int(hkl) & 0xFFFF if hkl else 0
 
-    def _char_of(self, vk, scan):
+    def _key_state(self):
+        """给 ToUnicodeEx 用的键盘状态。
+
+        不能用 GetKeyboardState：它读的是**本线程**的队列状态，在钩子线程里
+        Shift 永远是松开的，于是 Shift+1 会变成 '1' 而不是 '!'。
+        这里直接按物理键状态填。
+        """
         state = (ctypes.c_ubyte * 256)()
-        user32.GetKeyboardState(state)
+        for k in (0x10, 0xA0, 0xA1,          # Shift 左右
+                  0x11, 0xA2, 0xA3,          # Ctrl
+                  0x12, 0xA4, 0xA5):         # Alt
+            if user32.GetAsyncKeyState(k) & 0x8000:
+                state[k] = 0x80
+        if user32.GetKeyState(0x14) & 0x01:  # CapsLock 是切换位
+            state[0x14] = 0x01
+        return state
+
+    def _char_of(self, vk, scan):
+        state = self._key_state()
         fg = user32.GetForegroundWindow()
         tid = user32.GetWindowThreadProcessId(fg, None)
         hkl = user32.GetKeyboardLayout(tid)
