@@ -120,39 +120,6 @@ class KeyboardCapture:
             i -= 1
         return b[i:]
 
-    def _absorb_paste(self):
-        """把剪贴板里的最后一个词并进缓冲（Ctrl+V 时调用）。"""
-        try:
-            import re as _re
-            import win32clipboard
-        except Exception:
-            return
-        try:
-            win32clipboard.OpenClipboard()
-        except Exception:
-            return
-        try:
-            if not win32clipboard.IsClipboardFormatAvailable(
-                    win32clipboard.CF_UNICODETEXT):
-                return
-            txt = win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
-            if not txt:
-                return
-            m = _re.search(r"[\u0400-\u04FF\u0451\u0401\-]+$", txt.rstrip())
-            if not m:
-                return
-            self._push(m.group(0))
-            if self.debug:
-                print(f"[hook] 粘贴并入缓冲 -> {m.group(0)!r}",
-                      file=sys.stderr)
-        except Exception:
-            pass
-        finally:
-            try:
-                win32clipboard.CloseClipboard()
-            except Exception:
-                pass
-
     def _emit(self, word):
         if word and self.on_word:
             try:
@@ -208,10 +175,6 @@ class KeyboardCapture:
             return
         if not ch:
             return
-        # Ctrl+V 粘贴：钩子只能看到"按了 V"，看不到剪贴板里的字。
-        # 若不把粘贴内容补进缓冲，粘半个词再打半个词时补全就只剩手打那半截。
-        if vk == 0x56:                       # V
-            self._absorb_paste()
         if self.debug:
             print(f"[hook] vk={vk} -> {ch!r}", file=sys.stderr)
         if ch in SEPARATORS:
