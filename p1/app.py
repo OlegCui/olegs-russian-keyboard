@@ -51,7 +51,7 @@ WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
 VERBOSE = False          # 由 main() 按 --verbose 设置
-VERSION = "0.7.1"
+VERSION = "0.8.0"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -1113,6 +1113,11 @@ class App:
             m.add_command(label="▶ 继续" if self.paused else "⏸ 暂时关闭",
                           command=lambda: self.set_paused(not self.paused))
             m.add_command(label="复习生词本…", command=self.open_review)
+            m.add_command(label="报告问题（附日志）…", command=self.show_feedback)
+            m.add_command(label="打开日志文件夹…", command=self.open_log_folder)
+            self._autostart_var = tk.BooleanVar(value=self.autostart_on())
+            m.add_checkbutton(label="开机自启", variable=self._autostart_var,
+                              command=self.toggle_autostart)
             m.add_command(label="导出 Anki…", command=self.export_anki)
             m.add_separator()
             m.add_command(label="生词本…", command=self.open_wordbook)
@@ -1529,6 +1534,49 @@ class App:
                 json.dump(self.history, fh, ensure_ascii=False, indent=1)
         except Exception:
             pass
+
+    # ---------- 开机自启 ----------
+    def autostart_on(self):
+        try:
+            import autostart
+            return autostart.is_enabled()
+        except Exception:
+            return False
+
+    def toggle_autostart(self):
+        try:
+            import autostart
+            want = not autostart.is_enabled()
+            ok = autostart.set_enabled(want)
+            if not ok:
+                self.notify("自启设置失败（可能需要权限）", False, 3500)
+                return
+            self.notify("已设为开机自启" if want else "已取消开机自启", True, 2500)
+            log(f"[autostart] {want}")
+        except Exception as e:
+            self.notify(f"自启失败: {e}", False, 3500)
+
+    # ---------- 反馈日志 ----------
+    def show_feedback(self):
+        """整理一份脱敏报告，让用户看过后发到 GitHub。"""
+        try:
+            import feedback
+            rep = feedback.build(self, VERSION, LOGFILE)
+            url = feedback.issue_url(rep)
+            feedback.show_preview(self.root, rep, url)
+        except Exception as e:
+            log(f"[feedback] 生成失败: {e}")
+            self.notify(f"报告生成失败: {e}", False, 4000)
+
+    def open_log_folder(self):
+        try:
+            import subprocess
+            if os.path.exists(LOGFILE):
+                subprocess.Popen(["explorer", "/select,", LOGFILE])
+            else:
+                subprocess.Popen(["explorer", os.path.dirname(LOGFILE)])
+        except Exception as e:
+            self.notify(f"打开失败: {e}", False, 3000)
 
     def open_review(self):
         """打开生词本复习窗口；没有到期的词就提示。"""

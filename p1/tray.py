@@ -113,6 +113,12 @@ def start(app):
     def on_font_reset(icon=None, item=None):
         ui(lambda: app.bump_font(0))
 
+    def on_feedback(icon=None, item=None):
+        ui(lambda: app.show_feedback())
+
+    def on_autostart(icon=None, item=None):
+        ui(lambda: app.toggle_autostart())
+
     def on_review(icon=None, item=None):
         ui(lambda: app.open_review())
 
@@ -159,6 +165,8 @@ def start(app):
             MenuItem("恢复默认", on_font_reset),
         )),
         MenuItem("复习生词本", on_review),
+        MenuItem("报告问题（附日志）", on_feedback),
+        MenuItem("开机自启（开/关）", on_autostart),
         MenuItem("导出 Anki", on_anki),
         MenuItem("主题", Menu(
             MenuItem("深色", on_theme_dark),
