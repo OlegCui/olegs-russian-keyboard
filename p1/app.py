@@ -45,7 +45,7 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.1.8"
+VERSION = "0.1.9"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -167,6 +167,7 @@ class Bar:
         self.items = []
         self.data = None
         self.selected = 0
+        self.navigated = False       # 用户是否用 ←/→ 动过高亮
         self.font_px = 14            # 由 App 根据光标高度设置
         self.win = tk.Toplevel(root)
         self.win.overrideredirect(True)
@@ -197,6 +198,7 @@ class Bar:
         limit = 6 if fs <= 20 else (5 if fs <= 26 else 4)
         if not keep_sel or data is not self.data:
             self.selected = 0
+            self.navigated = False
             for i, it in enumerate(data["items"][:limit]):
                 if it["form"] == data["token"].lower():
                     self.selected = i
@@ -217,7 +219,7 @@ class Bar:
         if tag:
             tk.Label(head, text="  " + tag, bg=self.bg, fg="#8a9199",
                      font=("Microsoft YaHei", -max(10, int(fs * 0.6)))).pack(side="left")
-        tk.Label(head, text="←/→ 选 · 1-6 · 空格/Enter 确认 · Ctrl+D 收藏 · Ctrl+L 查词 · Esc ",
+        tk.Label(head, text="空格选1号 · 1-6 · ←/→ · Enter 保留原样 · Ctrl+D 收藏 · Ctrl+L 查词",
                  bg=self.bg, fg="#5c656d",
                  font=("Microsoft YaHei", -max(9, int(fs * 0.52)))).pack(side="right")
 
@@ -260,6 +262,7 @@ class Bar:
         if not self.items:
             return
         self.selected = (self.selected + d) % len(self.items)
+        self.navigated = True
         self.render(self.data, keep_sel=True)
 
     def show_at(self, x, y):
@@ -712,8 +715,11 @@ class App:
                     log(f"[space] 接管空格：{word!r}(#{rank_w}) -> {first!r}(#{rank_1})")
                     return True
             return False                # 已打的是完整常用词，空格照常输入
-        if vk == 0x0D:                       # Enter 确认当前高亮
-            self.q.put(("pick", self.bar.selected))
+        if vk == 0x0D:                       # Enter：没动过高亮就保留原样，动过就确认
+            if self.bar.navigated:
+                self.q.put(("pick", self.bar.selected))
+            else:
+                self.q.put(("keep", None))
             return True
         if vk == 0x09:                       # Tab：有第二种视图就切换，否则确认
             if len(self._variants) > 1:
@@ -750,6 +756,8 @@ class App:
                     self._pick(payload)
                 elif kind == "pick_space":
                     self._pick_space()
+                elif kind == "keep":
+                    self._keep_typed()
                 elif kind == "toggle":
                     self._toggle()
                 elif kind == "save":
@@ -977,6 +985,21 @@ class App:
             except Exception:
                 pass
         return new
+
+    def _keep_typed(self):
+        """回车：不动已打的字母，只补空格并收起候选条。"""
+        word = current_word(getattr(self.hook, "buffer", ""))
+        log(f"[keep] 保留原样 {word!r}")
+        if self.auto_space and word:
+            try:
+                self.hook.pause()
+                time.sleep(0.02)
+                input_sim.send_text(" ")
+                time.sleep(0.03)
+            finally:
+                self.hook.resume()
+            self.hook.buffer += " "
+        self.bar.hide()
 
     def _pick_space(self):
         """空格选 1 号候选（和点选走同一条路径，带自动空格）。"""

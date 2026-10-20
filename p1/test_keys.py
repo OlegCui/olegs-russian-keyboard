@@ -113,6 +113,8 @@ def main():
     case("← 一次 + Enter", "другу", [VK["LEFT"], VK["ENTER"]], "Друга ")
     case("← 两次 + Tab", "другу", [VK["LEFT"], VK["LEFT"], VK["TAB"]],
          "Друг ")
+    # 回车：没动过高亮 = 保留已打的字母，只补空格
+    case("Enter 保留原样", "другу", [VK["ENTER"]], "другу ")
 
     print("\n--- 未显示时不该拦截 ---")
     app.bar.hide()
