@@ -16,7 +16,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, "D:/Tools/俄语输入法/p1")
 
 import app as app_mod
-from ngram import Bigram
+from ngram import Bigram, Trigram, Predictor
 
 FAKE = {
     "я": [("не", 900), ("знаю", 700), ("хочу", 600)],
@@ -56,6 +56,28 @@ def main():
     check("predict('я')", bg.predict("я"), ["не", "знаю", "хочу"])
     check("predict('нет такого')", bg.predict("нет такого"), [])
 
+    print("\n--- 三元组：看前两个词 ---")
+    tri_path = os.path.join(tempfile.gettempdir(), "_trigram_test.tsv")
+    with open(tri_path, "w", encoding="utf-8") as fh:
+        fh.write("я не\tзнаю:900 могу:700\n")
+        fh.write("как ты\tдумаешь:800\n")
+    tri = Trigram(tri_path)
+    check("三元组条数", len(tri), 2)
+    check("predict('я не')", tri.predict("я не"), ["знаю", "могу"])
+
+    pred = Predictor(make_bigram_file(), tri_path)
+    got, src = pred.predict(["я", "не"])
+    check("三元组命中（来源）", src, "trigram")
+    check("三元组命中（候选）", got[:2], ["знаю", "могу"])
+
+    got2, src2 = pred.predict(["в", "не"])      # "в не" 不在三元组里
+    check("没命中退回二元组（来源）", src2, "bigram")
+    check("退回后用的是最后一个词", got2[:2], ["знаю", "могу"])
+
+    got3, src3 = pred.predict(["я"])
+    check("只有一个词时走二元组", src3, "bigram")
+    check("predict(['я'])", got3, ["не", "знаю", "хочу"])
+
     print("\n--- 完整链路：预测 → 选词 → 注入 ---")
     injected = []
     app_mod.input_sim.replace_tail = lambda n, t: (
@@ -63,7 +85,7 @@ def main():
     app_mod.input_sim.send_text = lambda t: (injected.append(("text", t)), True)[1]
 
     app = app_mod.App(require_lang=None, verbose=False)
-    app.eng._bg = bg                      # 用测试模型，不碰真实语料
+    app.eng._pred = Predictor(make_bigram_file(), tri_path)  # 用测试模型
     app.next_word = True
     app.start()
     app.root.after(40, app.pump)

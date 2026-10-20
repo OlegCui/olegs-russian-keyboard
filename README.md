@@ -5,7 +5,7 @@
 它不是输入法，而是在你已有的俄语键盘布局（ЙЦУКЕН）之上加一层：
 
 - **高频词补全** —— 打 `прив` 就提示 `привет`
-- **下一个词预测** —— 打完一个词，提示后面最常出现的词（对标 Gboard）
+- **下一个词预测** —— 看前两个词（三元组），提示后面最常出现的词（对标 Gboard）
 - **拼写更正** —— 打 `привт` 提示 `привет`
 - **变格提示** —— 打完 `другу` 告诉你这是「与格」，并列出全部词形
 - **个人词频记忆** —— 你选过的词下次排前面
@@ -274,6 +274,10 @@ build.cmd
 **下一个词预测**：`data/ru-bigram.tsv`，由 `data/build_bigram.py` 从
 [Leipzig Corpora Collection](https://wortschatz.uni-leipzig.de/en/download/Russian)
 的俄语句子训练（**CC BY 4.0**）。
+
+**三元组**：`data/ru-trigram.tsv`（2.6 万个前两词组合，1.25 MB），
+由 `data/build_trigram.py` 从同一批语料训练。运行时三元组优先，
+不命中自动退回二元组。
 
 **词频表**：`data/ru-words.txt`，160,000 词，由 `data/build_wordlist.py` 生成，两部分组成：
 

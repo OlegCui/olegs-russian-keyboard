@@ -62,3 +62,74 @@ class Bigram:
 
     def __len__(self):
         return len(self.table)
+
+
+class Trigram:
+    """三元组：看前两个词，预测第三个。
+
+    文件格式：`前一词 前两词<TAB>后词:次数 后词:次数 ...`
+    """
+
+    def __init__(self, path=None, max_followers=4):
+        self.table = {}
+        self.path = path
+        self.max_followers = max_followers
+        self._load(path)
+
+    def _load(self, path):
+        try:
+            if not path or not os.path.exists(path):
+                return
+            with open(path, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.rstrip("\n")
+                    if not line:
+                        continue
+                    key, _, rest = line.partition("\t")
+                    if not rest:
+                        continue
+                    rows = []
+                    for item in rest.split(" "):
+                        word, _, cnt = item.rpartition(":")
+                        if not word:
+                            continue
+                        try:
+                            rows.append((word, int(cnt)))
+                        except ValueError:
+                            continue
+                    if rows:
+                        self.table[key] = rows[:self.max_followers]
+        except Exception:
+            self.table = {}
+
+    def predict(self, key, limit=4):
+        rows = self.table.get((key or "").strip().lower())
+        return [w for w, _ in rows[:limit]] if rows else []
+
+    def __len__(self):
+        return len(self.table)
+
+
+class Predictor:
+    """三元组优先，不命中退回二元组。"""
+
+    def __init__(self, bigram_path=None, trigram_path=None):
+        self.bigram = Bigram(bigram_path)
+        self.trigram = Trigram(trigram_path)
+
+    def predict(self, words, limit=6):
+        """words：从旧到新的前几个词。返回 (候选列表, 来源)。"""
+        if isinstance(words, str):
+            words = [words] if words else []
+        words = [w for w in (words or []) if w]
+        if not words:
+            return [], "none"
+        if len(words) >= 2:
+            got = self.trigram.predict(f"{words[-2]} {words[-1]}", limit)
+            if got:
+                return got, "trigram"
+        got = self.bigram.predict(words[-1], limit)
+        return got, ("bigram" if got else "none")
+
+    def __len__(self):
+        return len(self.bigram) + len(self.trigram)

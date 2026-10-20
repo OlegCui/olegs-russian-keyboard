@@ -66,6 +66,11 @@ NGRAM_FILE = _first_existing(
     os.path.join(BUNDLE, "ru-bigram.tsv"),
 )
 
+TRIGRAM_FILE = _first_existing(
+    os.path.join(BUNDLE, "..", "data", "ru-trigram.tsv"),
+    os.path.join(BUNDLE, "ru-trigram.tsv"),
+)
+
 SETTINGS_FILE = user_path("settings.json")
 RULES_USER = user_path("rules.json")        # 用户可改的规则卡（优先于内置）
 FREQ_FILE = user_path("user_freq.json")
@@ -82,6 +87,7 @@ SRC = {
         "rules_user": RULES_USER,
         "words": WORDS_FILE,
         "bigram": NGRAM_FILE,
+        "trigram": TRIGRAM_FILE,
 }
 
 

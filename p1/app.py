@@ -50,7 +50,7 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.5.1"
+VERSION = "0.6.0"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -133,6 +133,22 @@ def previous_word(text):
     body = body.rstrip("".join(SEP))
     m = re.search(r"[А-Яа-яЁё\-]{2,}$", body)
     return m.group(0).lower() if m else ""
+
+
+def previous_words(text, n=2):
+    """取结尾处最近 n 个完整词（从旧到新）。用于三元组预测。
+
+    和 previous_word 的区别：这里允许单字母词（я / в / и / с / к），
+    它们在俄语里是最常见的预测起点。
+    """
+    body = text.rstrip()
+    if not body:
+        return []
+    if body == text and text[-1:] not in SEP:
+        return []                     # 还在打词，词没结束
+    body = body.rstrip("".join(SEP))
+    words = re.findall(r"[А-Яа-яЁё\-]{1,24}", body)
+    return [w.lower() for w in words[-n:]]
 
 
 def focused_rect():
@@ -1283,15 +1299,17 @@ class App:
             if time.time() - getattr(self, "_accepted_at", 0) < 0.35:
                 self.bar.hide()          # 刚选完词，别马上又弹
                 return
-            prev = previous_word(text)
-            preds = self.eng.predict(prev) if prev else []
+            prevs = previous_words(text, 2)
+            preds, src, used = ((self.eng.predict_ctx(prevs) if prevs
+                                 else ([], "none", [])))
             if preds:
                 items = [{"form": w, "label": "预测"} for w in preds]
+                ctx = " ".join(used)
                 self._word = ""
                 self._variants = {"predict": {
-                    "token": "", "lemma": prev, "current": {},
+                    "token": "", "lemma": ctx, "current": {},
                     "items": items, "findings": [], "mode": "predict",
-                    "hint": f"「{prev}」后面常见",
+                    "hint": f"「{ctx}」后面常见 · {src}",
                 }}
                 self._timing = {"guard": 0.0, "suggest": 0.0,
                                 "complete": (t() - t0) * 1000}
@@ -1752,8 +1770,12 @@ def _run_main():
         app.next_word = bool(cfg_data["next_word"])
     log(f"[配置] 下一个词预测={app.next_word}")
     try:
-        _bg = app.eng.bg
-        log(f"[配置] 预测模型: {len(_bg) if _bg else 0} 个前词")
+        _p = app.eng.predictor
+        if _p:
+            log(f"[配置] 预测模型: 二元组 {len(_p.bigram)} 前词 / "
+                f"三元组 {len(_p.trigram)} 前两词")
+        else:
+            log("[配置] 预测模型: 无")
     except Exception as _e:
         log(f"[配置] 预测模型加载失败: {_e}")
 

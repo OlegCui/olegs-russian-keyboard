@@ -200,24 +200,46 @@ class Engine:
         return self._dic or None
 
     @property
-    def bg(self):
-        """下一个词预测用的 bigram（懒加载，缺文件时自动降级为空）。"""
-        if getattr(self, "_bg", None) is None:
+    def predictor(self):
+        """预测器（三元组优先，退回二元组）。懒加载，缺文件时自动降级。"""
+        if getattr(self, "_pred", None) is None:
             try:
-                from ngram import Bigram
+                from ngram import Predictor
                 import paths
-                self._bg = Bigram(getattr(paths, "NGRAM_FILE", None))
+                self._pred = Predictor(
+                    getattr(paths, "NGRAM_FILE", None),
+                    getattr(paths, "TRIGRAM_FILE", None))
             except Exception as e:
-                print(f"[engine] bigram 加载失败: {e}", file=sys.stderr)
-                self._bg = False
-        return self._bg or None
+                print(f"[engine] 预测模型加载失败: {e}", file=sys.stderr)
+                self._pred = False
+        return self._pred or None
 
-    def predict(self, prev_word, limit=6):
-        """上一个词之后最可能出现的词。没有模型或没命中就返回空。"""
-        b = self.bg
-        if not b or not prev_word:
+    @property
+    def bg(self):
+        """兼容旧接口：返回二元组模型。"""
+        p = self.predictor
+        return p.bigram if p else None
+
+    def predict(self, prev, limit=6):
+        """预测下一个词。
+
+        prev 可以是字符串（只看前一个词）或列表（前几个词，从旧到新）。
+        三元组命中就用三元组，否则退回二元组。
+        """
+        p = self.predictor
+        if not p:
             return []
-        return b.predict(prev_word, limit)
+        got, _src = p.predict(prev, limit)
+        return got
+
+    def predict_ctx(self, prev, limit=6):
+        """同 predict，但额外返回 (候选, 来源, 用到的词)，供界面显示提示。"""
+        p = self.predictor
+        if not p:
+            return [], "none", []
+        words = [prev] if isinstance(prev, str) else list(prev or [])
+        got, src = p.predict(words, limit)
+        return got, src, words
 
     def is_valid(self, word):
         """这个词是不是真实存在的词（pymorphy3 认得 = 不是拼错）。"""
