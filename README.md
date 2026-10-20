@@ -254,11 +254,20 @@ build.cmd
 
 ## 第三方数据
 
-- 词形分析：[pymorphy3](https://github.com/no-plagiarism/pymorphy3)（MIT）
-- 词频表：`data/russian-words/100000-russian-words.txt`
-  来自 [University of Leeds Corpus](http://corpus.leeds.ac.uk/frqc/internet-ru.num)，
-  由 [hingston](https://github.com/hingston/russian) 整理，
-  **CC BY 2.5** —— 允许商用，需署名（授权原文见 `data/russian-words/LICENSE.md`）
+**词形分析**：[pymorphy3](https://github.com/no-plagiarism/pymorphy3)（MIT）
+
+**词频表**：`data/ru-words.txt`，160,000 词，由 `data/build_wordlist.py` 生成，两部分组成：
+
+| 来源 | 内容 | 许可 |
+|---|---|---|
+| [OpenSubtitles 2018](https://opus.nlpl.eu/OpenSubtitles-v2018.php) 字幕词频<br>（经 [hermitdave/FrequencyWords](https://github.com/hermitdave/FrequencyWords) 汇总） | 口语对白，前 120,000 词 | **CC BY-SA 4.0** |
+| [University of Leeds Corpus](http://corpus.leeds.ac.uk/frqc/internet-ru.num)<br>（经 [hingston](https://github.com/hingston/russian) 整理） | 书面语补充 40,000 词 | CC BY 2.5 |
+
+字幕语料让补全符合**日常说话**：`зав` → `завтра`、`прив` → `привет`、`здр` → `здравствуйте`。
+字幕里的 OCR 噪声用 pymorphy3 的形态学词典过滤掉了（约 2 万条）。
+
+授权细节见 `data/russian-words/README-words.md` 与 `data/russian-words/LICENSE.md`。
+**该词表是 CC BY-SA 4.0 的衍生数据，单独遵循 CC BY-SA 4.0，不受本项目的 MIT 许可覆盖。**
 
 ---
 

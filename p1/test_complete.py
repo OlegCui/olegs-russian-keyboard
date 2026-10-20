@@ -67,7 +67,7 @@ def main():
     check("пожа", "complete", True)
     check("здрав", "complete", True)     # 虽是合法词，但有补全 → 仍优先补全
     check("привт", "complete", True)     # 拼错 → 更正
-    check("другу", "cases", False)       # 词已写完、没有更长的词 → 变格
+    check("хочу", "cases", False)        # 词已写完、没有更长的词 → 变格
 
     print("\n--- Tab 在有两种视图时切换 ---")
     m1 = check("друг", "complete", True)
@@ -86,7 +86,7 @@ def main():
 
     print("\n--- 只有一种视图时，Tab 确认候选 ---")
     before = len(injected)
-    check("другу", "cases", False)
+    check("хочу", "cases", False)
     app._maybe_intercept(VK_TAB)
     pump()
     picked = len(injected) > before

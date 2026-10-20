@@ -51,11 +51,13 @@ RULES_FILE = _first_existing(
 )
 
 # 词表：开发时在 ../data/，打包后在根目录
+# ru-words.txt = OpenSubtitles 词频表（口语）+ Leeds 补充，见 data/build_wordlist.py
 WORDS_FILE = _first_existing(
+    os.path.join(BUNDLE, "..", "data", "ru-words.txt"),
+    os.path.join(BUNDLE, "ru-words.txt"),               # PyInstaller 打进来的原始文件名
     os.path.join(BUNDLE, "..", "data", "russian-words",
-                 "100000-russian-words.txt"),
-    os.path.join(BUNDLE, "100000-russian-words.txt"),   # PyInstaller 打进来的原始文件名
-    os.path.join(BUNDLE, "russian-words.txt"),          # 兼容旧写法
+                 "100000-russian-words.txt"),           # 旧表，保底
+    os.path.join(BUNDLE, "100000-russian-words.txt"),
 )
 
 SETTINGS_FILE = user_path("settings.json")

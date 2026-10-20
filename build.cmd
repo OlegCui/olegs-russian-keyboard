@@ -11,7 +11,7 @@ set NAME=OlegsRussianKeyboard
   --noconfirm --clean --onefile --windowed ^
   --name %NAME% ^
   --add-data "%ROOT%p0\rules.json;." ^
-  --add-data "%ROOT%data\russian-words\100000-russian-words.txt;." ^
+  --add-data "%ROOT%data\ru-words.txt;." ^
   --collect-all pymorphy3 ^
   --collect-all pymorphy3_dicts_ru ^
   --hidden-import tray ^
