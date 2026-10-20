@@ -15,6 +15,7 @@ import argparse
 import ctypes
 import os
 import queue
+import re
 import sys
 import time
 
@@ -49,7 +50,7 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -119,6 +120,19 @@ def current_word(text):
     while i > 0 and text[i - 1] not in SEP:
         i -= 1
     return text[i:]
+
+
+def previous_word(text):
+    """刚打完一个词（以空格/标点结尾）时，取它前面的那个词，用于预测下一个词。"""
+    body = text.rstrip()
+    if not body:
+        return ""
+    if body == text and text[-1:] not in SEP:
+        # 末尾没有分隔符 = 正在打词，不是"词已结束"
+        return ""
+    body = body.rstrip("".join(SEP))
+    m = re.search(r"[А-Яа-яЁё\-]{2,}$", body)
+    return m.group(0).lower() if m else ""
 
 
 def focused_rect():
@@ -793,6 +807,7 @@ class App:
         self.root = tk.Tk()
         self.root.withdraw()
         self.cfg_theme = "dark"          # dark / light / auto
+        self.next_word = True            # 下一个词预测
         self.theme = resolve_theme(self.cfg_theme)
         self.bar = Bar(self.root, theme=self.theme)
         self.bar.on_pick = self._accept
@@ -1148,8 +1163,13 @@ class App:
         except Exception:
             pass
         if self.auto_capital:
-            idx = buf.rfind(word) if word else -1
-            before = buf[:idx].rstrip() if idx >= 0 else ""
+            core = buf.rstrip()
+            if word:
+                idx = buf.rfind(word)
+                before = buf[:idx].rstrip() if idx >= 0 else core
+            else:
+                # 插入的是新词（下一个词预测）：句子状态看整个缓冲的结尾
+                before = core
             at_start = (not before) or (before[-1] in ".!?…\n\r")
             if at_start:
                 return new[:1].upper() + new[1:]
@@ -1211,6 +1231,7 @@ class App:
             fg_after = user32.GetForegroundWindow()
             # 注入期间钩子被暂停，这里手动把缓冲对齐到真实情况
             self.hook.buffer = buf[:len(buf) - n] + new + (" " if add_space else "")
+            self._accepted_at = time.time()
             # 强信号：用户从候选条里选了这个词
             if self.eng.uf:
                 self.eng.uf.add(new, 2)
@@ -1248,6 +1269,27 @@ class App:
         t = time.perf_counter
         t0 = t()
         word = current_word(text)
+
+        # 一个词刚结束（以空格/标点收尾）→ 预测下一个词
+        if self.next_word and not word.strip() and text.strip():
+            if time.time() - getattr(self, "_accepted_at", 0) < 0.35:
+                self.bar.hide()          # 刚选完词，别马上又弹
+                return
+            prev = previous_word(text)
+            preds = self.eng.predict(prev) if prev else []
+            if preds:
+                items = [{"form": w, "label": "预测"} for w in preds]
+                self._word = ""
+                self._variants = {"predict": {
+                    "token": "", "lemma": prev, "current": {},
+                    "items": items, "findings": [], "mode": "predict",
+                    "hint": f"「{prev}」后面常见",
+                }}
+                self._timing = {"guard": 0.0, "suggest": 0.0,
+                                "complete": (t() - t0) * 1000}
+                self._show("predict")
+                return
+
         if len(word) < 2 or not any("\u0400" <= c <= "\u04FF" for c in word):
             self.bar.hide()
             return
@@ -1479,11 +1521,12 @@ def selftest():
     print(f"  钩子安装: {'OK' if ok_hook else 'FAIL'}")
 
     cases = [
-        ("другу", True, 6),
-        ("хочу", True, 6),
+        ("другу", True, 1),          # 只有「другую」这一个补全
+        ("хочу", True, 4),
         ("я", False, 0),
-        ("привет мир", True, 6),
-        ("привет мир ", False, 0),   # 打完空格后应当收起
+        ("привет мир", True, 4),
+        ("привет мир ", True, 4),    # 词刚结束 → 给下一个词预测
+        ("привет мир  ", True, 4),   # 再多一个空格，仍然预测同一个词
     ]
     app.root.after(40, app.pump)
     results = []
@@ -1493,7 +1536,7 @@ def selftest():
             app.root.update()
             time.sleep(0.02)
         shown = app.bar.visible
-        n = len(app.eng.suggest(current_word(text))["items"])
+        n = len(app.bar.items)              # 候选条里实际有几项（补全/变格/预测通用）
         ok = (shown == should_show) and (n >= min_items or not should_show)
         results.append((text, shown, n, ok))
         print(f"  输入 {text!r:20} 候选条显示={shown}  条目={n}  "
@@ -1696,6 +1739,15 @@ def _run_main():
 
     app.apply_theme(cfg_data.get("theme", "dark"), save=False)
     log(f"[配置] 主题={app.cfg_theme}（实际 {resolve_theme(app.cfg_theme)}）")
+
+    if "next_word" in cfg_data:
+        app.next_word = bool(cfg_data["next_word"])
+    log(f"[配置] 下一个词预测={app.next_word}")
+    try:
+        _bg = app.eng.bg
+        log(f"[配置] 预测模型: {len(_bg) if _bg else 0} 个前词")
+    except Exception as _e:
+        log(f"[配置] 预测模型加载失败: {_e}")
 
     if "auto_space" in cfg_data:
         app.auto_space = bool(cfg_data["auto_space"])

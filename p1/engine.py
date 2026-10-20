@@ -199,6 +199,26 @@ class Engine:
                 self._dic = False
         return self._dic or None
 
+    @property
+    def bg(self):
+        """下一个词预测用的 bigram（懒加载，缺文件时自动降级为空）。"""
+        if getattr(self, "_bg", None) is None:
+            try:
+                from ngram import Bigram
+                import paths
+                self._bg = Bigram(getattr(paths, "NGRAM_FILE", None))
+            except Exception as e:
+                print(f"[engine] bigram 加载失败: {e}", file=sys.stderr)
+                self._bg = False
+        return self._bg or None
+
+    def predict(self, prev_word, limit=6):
+        """上一个词之后最可能出现的词。没有模型或没命中就返回空。"""
+        b = self.bg
+        if not b or not prev_word:
+            return []
+        return b.predict(prev_word, limit)
+
     def is_valid(self, word):
         """这个词是不是真实存在的词（pymorphy3 认得 = 不是拼错）。"""
         w = word.strip(PUNCT).lower()

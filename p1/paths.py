@@ -60,6 +60,12 @@ WORDS_FILE = _first_existing(
     os.path.join(BUNDLE, "100000-russian-words.txt"),
 )
 
+# 下一个词预测用的 bigram（data/build_bigram.py 生成）
+NGRAM_FILE = _first_existing(
+    os.path.join(BUNDLE, "..", "data", "ru-bigram.tsv"),
+    os.path.join(BUNDLE, "ru-bigram.tsv"),
+)
+
 SETTINGS_FILE = user_path("settings.json")
 RULES_USER = user_path("rules.json")        # 用户可改的规则卡（优先于内置）
 FREQ_FILE = user_path("user_freq.json")
@@ -75,6 +81,7 @@ SRC = {
         "rules": RULES_FILE,
         "rules_user": RULES_USER,
         "words": WORDS_FILE,
+        "bigram": NGRAM_FILE,
 }
 
 

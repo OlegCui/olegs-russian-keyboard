@@ -12,6 +12,7 @@ set NAME=OlegsRussianKeyboard
   --name %NAME% ^
   --add-data "%ROOT%p0\rules.json;." ^
   --add-data "%ROOT%data\ru-words.txt;." ^
+  --add-data "%ROOT%data\ru-bigram.tsv;." ^
   --collect-all pymorphy3 ^
   --collect-all pymorphy3_dicts_ru ^
   --hidden-import tray ^
