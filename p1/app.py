@@ -45,7 +45,7 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.1.10"
+VERSION = "0.1.11"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -957,7 +957,8 @@ class App:
         """Ctrl+L：打开形式词典查当前词。"""
         try:
             import lookup
-            w = word or self._word or current_word(self.hook.buffer)
+            w = (word or current_word(getattr(self.hook, "buffer", ""))
+                 or self._word or "")
             lookup.show_lookup(self.root, self.eng, w)
             log(f"[lookup] 查词 {w!r}")
         except Exception:

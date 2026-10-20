@@ -130,8 +130,10 @@ class LookupWindow:
                     if word:
                         win.query(word)
                     win.win.deiconify()
+                    win.win.attributes("-topmost", True)
                     win.win.lift()
-                    win.entry.focus_set()
+                    win.win.focus_force()
+                    win.win.after(400, lambda: win.win.attributes("-topmost", False))
                     return win
             except Exception:
                 pass
@@ -147,7 +149,9 @@ class LookupWindow:
         self.win = tk.Toplevel(root)
         self.win.title("俄语形式词典")
         self.win.geometry("640x600+360+120")
-        self.win.transient(root)
+        # 不能 transient：root 是 withdraw 状态，transient 子窗口会被一起藏掉
+        self.win.attributes("-topmost", True)
+        self.win.after(400, lambda: self.win.attributes("-topmost", False))
 
         top = tk.Frame(self.win)
         top.pack(fill="x", padx=10, pady=8)
