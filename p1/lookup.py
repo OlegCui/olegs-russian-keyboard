@@ -121,7 +121,7 @@ class LookupWindow:
     _instances = {}
 
     @classmethod
-    def show(cls, root, eng, word=None):
+    def show(cls, root, eng, word=None, app=None):
         key = id(root)
         win = cls._instances.get(key)
         if win is not None:
@@ -137,16 +137,17 @@ class LookupWindow:
                     return win
             except Exception:
                 pass
-        win = cls(root, eng)
+        win = cls(root, eng, app=app)
         cls._instances[key] = win
         if word:
             win.query(word)
         return win
 
-    def __init__(self, root, eng):
+    def __init__(self, root, eng, app=None):
         import tkinter as tk
         import tkinter.ttk as ttk
         self.eng = eng
+        self.app = app
         self.win = tk.Toplevel(root)
         self.win.title("俄语形式词典")
         self.win.geometry("680x620+360+120")
@@ -183,6 +184,10 @@ class LookupWindow:
         btns = tk.Frame(self.win)
         btns.pack(fill="x", padx=12, pady=(0, 12))
         ttk.Button(btns, text="复制结果", command=self._copy).pack(side="left")
+        self.btn_save = ttk.Button(btns, text="加入生词本", command=self._save)
+        self.btn_save.pack(side="left", padx=8)
+        ttk.Button(btns, text="导出 Anki",
+                   command=self._export_anki).pack(side="left")
         ttk.Button(btns, text="清空",
                    command=lambda: self.query("")).pack(side="left", padx=8)
 
@@ -212,11 +217,55 @@ class LookupWindow:
         except Exception:
             pass
 
+    def _save(self):
+        """把输入框里的词加进生词本（含原形、词性、格）。"""
+        if self.app is None:
+            return
+        w = (self.entry.get() or "").strip()
+        if not w:
+            return
+        try:
+            info = self.eng.analyze(w) or {}
+            cur = info.get("current") or {}
+            added = self.app.wb.add(
+                w, lemma=info.get("lemma", ""),
+                pos=cur.get("pos_zh", ""), case=cur.get("case_zh", ""),
+                app="lookup")
+            self.app.notify("已加入生词本：" + w if added else "生词本里已有：" + w,
+                            True, 2500)
+        except Exception as e:
+            self.app.notify(f"加入失败: {e}", False, 3000)
+
+    def _export_anki(self):
+        if self.app is None:
+            return
+        path = self.app.wb.export_anki()
+        if path:
+            self.app.notify("Anki 已导出", True, 2500)
+            try:
+                import subprocess
+                subprocess.Popen(["explorer", "/select,", path])
+            except Exception:
+                pass
+        else:
+            self.app.notify("导出失败", False, 3000)
+
     def query(self, word):
         w = (word or "").strip()
         self.entry.delete(0, "end")
         self.entry.insert(0, w)
         out = format_card(self.eng, w)
+        if w and self.app is not None:
+            try:
+                ex = self.app.example_of(w)
+            except Exception:
+                ex = ""
+            if ex:
+                out += f"\n\n例句\n────\n{ex}\n"
+            try:
+                self.app.add_history(w)
+            except Exception:
+                pass
         self.text.config(state="normal")
         self.text.delete("1.0", "end")
         self.text.insert("1.0", out)

@@ -113,6 +113,12 @@ def start(app):
     def on_font_reset(icon=None, item=None):
         ui(lambda: app.bump_font(0))
 
+    def on_review(icon=None, item=None):
+        ui(lambda: app.open_review())
+
+    def on_anki(icon=None, item=None):
+        ui(lambda: app.export_anki())
+
     def on_theme_dark(icon=None, item=None):
         ui(lambda: app.apply_theme("dark"))
 
@@ -152,6 +158,8 @@ def start(app):
             MenuItem("减小 -2", on_font_small),
             MenuItem("恢复默认", on_font_reset),
         )),
+        MenuItem("复习生词本", on_review),
+        MenuItem("导出 Anki", on_anki),
         MenuItem("主题", Menu(
             MenuItem("深色", on_theme_dark),
             MenuItem("浅色", on_theme_light),

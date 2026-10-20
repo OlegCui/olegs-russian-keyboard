@@ -33,7 +33,9 @@ class WordBook:
                     raw = json.load(fh)
                 ws = raw.get("words") or []
                 if isinstance(ws, list):
-                    self.words = [w for w in ws if isinstance(w, dict) and w.get("word")]
+                    self.words = [w for w in ws
+                                  if isinstance(w, dict) and w.get("word")]
+                    self._migrate()
         except Exception as e:
             print(f"[wordbook] 读取失败: {e}", file=__import__("sys").stderr)
 
@@ -60,13 +62,95 @@ class WordBook:
                 self.save()
                 self.export_md()
                 return False          # 已存在，只加计数
+        now = time.time()
         self.words.append({
             "word": w, "lemma": lemma, "pos": pos, "case": case,
-            "app": app, "added": time.time(), "last": time.time(), "count": 1,
+            "app": app, "added": now, "last": now, "count": 1,
+            # 间隔重复：due 是"下次该复习的时间"，新词立刻到期
+            "due": now, "interval": 0.0, "ease": 2.5,
+            "reps": 0, "lapses": 0,
         })
         self.save()
         self.export_md()
         return True
+
+    def _migrate(self):
+        """老版本存下来的词没有 SRS 字段，补上默认值（due=现在，立刻可复习）。"""
+        now = time.time()
+        for it in self.words:
+            it.setdefault("due", it.get("added", now))
+            it.setdefault("interval", 0.0)
+            it.setdefault("ease", 2.5)
+            it.setdefault("reps", 0)
+            it.setdefault("lapses", 0)
+
+    # ---------- 间隔重复 ----------
+    def due_words(self, now=None):
+        """到期该复习的词，最久没复习的排前面。"""
+        now = time.time() if now is None else now
+        due = [w for w in self.words if w.get("due", 0) <= now]
+        return sorted(due, key=lambda w: (w.get("due", 0), w.get("reps", 0)))
+
+    def next_due(self):
+        """最近一个到期时间（没有词就返回 None）。"""
+        if not self.words:
+            return None
+        return min(w.get("due", 0) for w in self.words)
+
+    def review(self, word, grade):
+        """复习一个词。grade: 0 忘了 / 1 勉强 / 2 记得 / 3 太简单。"""
+        key = (word or "").lower()
+        for it in self.words:
+            if it["word"].lower() != key:
+                continue
+            iv = float(it.get("interval", 0.0))
+            ease = float(it.get("ease", 2.5))
+            if grade <= 0:
+                iv, ease = 1.0, max(1.3, ease - 0.20)
+                it["lapses"] = it.get("lapses", 0) + 1
+            elif grade == 1:
+                iv, ease = max(1.0, (iv or 1.0) * 1.2), max(1.3, ease - 0.05)
+            elif grade == 2:
+                iv = max(1.0, (iv or 1.0) * 2.0)
+            else:
+                iv, ease = max(2.0, (iv or 2.0) * 3.0), min(3.0, ease + 0.10)
+            iv = min(180.0, iv)
+            it["interval"] = round(iv, 2)
+            it["ease"] = round(ease, 2)
+            it["reps"] = it.get("reps", 0) + 1
+            it["last"] = time.time()
+            it["due"] = time.time() + iv * 86400
+            self.save()
+            self.export_md()
+            return True
+        return False
+
+    def review_stats(self):
+        now = time.time()
+        total = len(self.words)
+        due = sum(1 for w in self.words if w.get("due", 0) <= now)
+        learned = sum(1 for w in self.words if w.get("interval", 0) >= 7)
+        return {"total": total, "due": due, "learned": learned}
+
+    # ---------- Anki 导出 ----------
+    def export_anki(self, path=None):
+        """制表符分隔，Anki 可直接导入：正面=词，背面=原形·语法·例句。"""
+        path = path or (self.path.rsplit(".", 1)[0] + "-anki.tsv")
+        try:
+            lines = ["#separator:tab", "#html:false",
+                     "#columns:Word\tBack"]
+            for it in self.words:
+                tag = " · ".join(x for x in [it.get("pos"), it.get("case")] if x)
+                back_bits = [it.get("lemma") or "", tag,
+                             f"复习 {it.get('reps', 0)} 次"]
+                back = " | ".join(x for x in back_bits if x)
+                lines.append(f"{it['word']}\t{back}")
+            with open(path, "w", encoding="utf-8-sig", newline="\n") as fh:
+                fh.write("\n".join(lines) + "\n")
+            return path
+        except Exception as e:
+            print(f"[wordbook] Anki 导出失败: {e}", file=__import__("sys").stderr)
+            return ""
 
     def remove(self, word):
         key = (word or "").lower()

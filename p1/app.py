@@ -51,7 +51,7 @@ WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
 VERBOSE = False          # 由 main() 按 --verbose 设置
-VERSION = "0.6.2"
+VERSION = "0.7.0"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -876,6 +876,30 @@ class App:
             log(f"[wordbook] 初始化失败: {e}")
             self.wb = None
         self.pill = StatusPill(self.root, self, theme=self.theme)
+        # 例句库（懒加载，缺文件就当没有）
+        self.examples = None
+        try:
+            import examples as ex_mod
+            import paths as _paths
+            self.examples = ex_mod.Examples(getattr(_paths, "EXAMPLES_FILE", None))
+            log(f"[配置] 例句库: {len(self.examples)} 个原形")
+        except Exception as e:
+            log(f"[配置] 例句库加载失败: {e}")
+
+        # 查词历史（Ctrl+L 里有用的词，往往是没记住的）
+        self.history = []
+        try:
+            self._load_history()
+        except Exception:
+            pass
+
+        # 句法检查用的形态分析器（和引擎共用）
+        try:
+            import gov as _gov
+            self._gov = _gov
+        except Exception:
+            self._gov = None
+
         self.hook = hook_mod.KeyboardCapture(
             on_text=lambda t: self.q.put(("text", t)),
             on_word=lambda w: self.q.put(("word", w)),
@@ -952,6 +976,10 @@ class App:
 
     def _trace_key(self, vk, scan, lang, ch):
         self.key_count += 1
+        try:
+            self._buffer_fg = user32.GetForegroundWindow()
+        except Exception:
+            pass
         if self.key_count == 1 or self.key_count % 10 == 0:
             self.pill.set(f"俄语助手 运行中 · 已收 {self.key_count} 键", True)
         if not self.verbose:
@@ -1084,6 +1112,8 @@ class App:
             m = tk.Menu(parent, tearoff=0)
             m.add_command(label="▶ 继续" if self.paused else "⏸ 暂时关闭",
                           command=lambda: self.set_paused(not self.paused))
+            m.add_command(label="复习生词本…", command=self.open_review)
+            m.add_command(label="导出 Anki…", command=self.export_anki)
             m.add_separator()
             m.add_command(label="生词本…", command=self.open_wordbook)
             m.add_command(label="查词…", command=self.open_lookup_window)
@@ -1329,15 +1359,16 @@ class App:
         # （不用 GetAsyncKeyState 的鼠标标志位：那个标志位是进程级的，
         #   查询一次就清零，判断不可靠）
         try:
-            fg = user32.GetForegroundWindow()
-            if fg != getattr(self, "_last_fg", fg):
-                if self.hook.buffer:
-                    log("[guard] 前台窗口变化，清空缓冲")
-                self.hook.buffer = ""
-                self.bar.hide()
-                self._last_fg = fg
-                return
-            self._last_fg = fg
+            anchor_fg = getattr(self, "_buffer_fg", None)
+            if anchor_fg is not None:
+                fg = user32.GetForegroundWindow()
+                if fg != anchor_fg:
+                    if self.hook.buffer:
+                        log("[guard] 前台窗口变化，清空缓冲")
+                    self.hook.buffer = ""
+                    self.bar.hide()
+                    self._buffer_fg = None
+                    return
         except Exception:
             pass
         word = current_word(text)
@@ -1347,6 +1378,29 @@ class App:
             if time.time() - getattr(self, "_accepted_at", 0) < 0.35:
                 self.bar.hide()          # 刚选完词，别马上又弹
                 return
+            # 先看有没有支配关系错误（比预测更有价值）
+            if self._gov is not None and not getattr(self, "_gov_shown", None):
+                two = previous_words(text, 2)
+                if len(two) == 2:
+                    try:
+                        err = self._gov.check(self.eng.morph, two[0], two[1])
+                    except Exception:
+                        err = None
+                    if err:
+                        self._gov_shown = (time.time(), err.get("fix"))
+                        items = [{"form": err["fix"], "label": "更正"}]
+                        self._word = ""
+                        self._variants = {"gov": {
+                            "token": "", "lemma": two[0], "current": {},
+                            "items": items,
+                            "findings": [{"title": err["title"]}],
+                            "mode": "gov", "hint": err["title"],
+                        }}
+                        self._timing = {"guard": 0.0, "suggest": 0.0,
+                                        "complete": (t() - t0) * 1000}
+                        self._show("gov")
+                        log(f"[gov] {two[0]} {two[1]} -> {err['fix']}")
+                        return
             prevs = previous_words(text, 2)
             preds, src, used = ((self.eng.predict_ctx(prevs) if prevs
                                  else ([], "none", [])))
@@ -1436,6 +1490,80 @@ class App:
         if reason not in self._skip_seen:
             self._skip_seen.add(reason)
             log(f"[skip] 在 {reason} 里不弹候选条")
+
+    def example_of(self, word):
+        """给一个词找例句（按原形匹配）。"""
+        if self.examples is None:
+            return ""
+        try:
+            return self.examples.get(word, self.eng.morph)
+        except Exception:
+            return ""
+
+    # ---------- 查词历史 ----------
+    HISTORY_MAX = 300
+
+    def _history_path(self):
+        import paths as _paths
+        return _paths.user_path("lookup-history.json")
+
+    def _load_history(self):
+        import json
+        p = self._history_path()
+        if os.path.exists(p):
+            with open(p, encoding="utf-8-sig") as fh:
+                data = json.load(fh)
+            if isinstance(data, list):
+                self.history = [x for x in data if isinstance(x, str)][:self.HISTORY_MAX]
+
+    def add_history(self, word):
+        w = (word or "").strip()
+        if not w:
+            return
+        self.history = [x for x in self.history if x.lower() != w.lower()]
+        self.history.insert(0, w)
+        self.history = self.history[:self.HISTORY_MAX]
+        try:
+            import json
+            with open(self._history_path(), "w", encoding="utf-8") as fh:
+                json.dump(self.history, fh, ensure_ascii=False, indent=1)
+        except Exception:
+            pass
+
+    def open_review(self):
+        """打开生词本复习窗口；没有到期的词就提示。"""
+        try:
+            import review as rv
+        except Exception as e:
+            log(f"[review] 模块加载失败: {e}")
+            return
+        stats = self.wb.review_stats()
+        if not stats["due"]:
+            nxt = self.wb.next_due()
+            when = ""
+            if nxt:
+                when = time.strftime("%m-%d %H:%M", time.localtime(nxt))
+                when = f"，最近一批 {when} 到期"
+            self.notify(f"今天没有要复习的词{when}", True, 4000)
+            return
+        win = rv.open_review(self.root, self.wb, eng=self.eng,
+                             examples=self.examples,
+                             on_done=lambda done: self.notify(
+                                 f"复习了 {done} 个词", True, 3000))
+        if win is None:
+            self.notify("没有到期的词", True, 3000)
+
+    def export_anki(self):
+        path = self.wb.export_anki()
+        if path:
+            self.notify("Anki 已导出", True, 3000)
+            try:
+                import subprocess
+                subprocess.Popen(["explorer", "/select,", path])
+            except Exception:
+                pass
+        else:
+            self.notify("导出失败", False, 3000)
 
     def apply_theme(self, name, save=True):
         """切换主题：dark / light / auto，立即生效并写进 settings.json。"""
