@@ -45,7 +45,7 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.1.12"
+VERSION = "0.1.13"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -571,6 +571,32 @@ def work_area():
     return (0, 0, user32.GetSystemMetrics(0), user32.GetSystemMetrics(1))
 
 
+def clipboard_word():
+    """剪贴板里最后一个俄语词。只在按 Ctrl+D / Ctrl+L 时调用，不碰打字流程。"""
+    try:
+        import re
+        import win32clipboard as cb
+    except Exception:
+        return ""
+    try:
+        cb.OpenClipboard()
+    except Exception:
+        return ""
+    try:
+        if not cb.IsClipboardFormatAvailable(cb.CF_UNICODETEXT):
+            return ""
+        txt = cb.GetClipboardData(cb.CF_UNICODETEXT) or ""
+    except Exception:
+        return ""
+    finally:
+        try:
+            cb.CloseClipboard()
+        except Exception:
+            pass
+    runs = re.findall(r"[\u0400-\u04FF\u0451\u0401\-]{2,}", txt)
+    return runs[-1] if runs else ""
+
+
 def foreground_exe():
     """前台程序的可执行文件名（小写）。"""
     try:
@@ -686,6 +712,10 @@ class App:
         # 但不能在中文/英文布局下抢走浏览器的 Ctrl+D / Ctrl+L
         if ctrl and vk in (0x44, 0x4C):
             word = current_word(getattr(self.hook, "buffer", ""))
+            # 没在打字（或词是复制来的）→ 用剪贴板里的词
+            # 只在按这两个键时读一次剪贴板，不影响 Ctrl+V
+            if not word:
+                word = clipboard_word()
             has_ru = any("\u0400" <= c <= "\u04FF" for c in word)
             # 候选条可见 = 显然在打俄语，布局 ID 报错也认；
             # 条子收起时必须真的在俄语布局，否则浏览器会丢快捷键
@@ -693,7 +723,7 @@ class App:
             if ru and word:
                 key = "D" if vk == 0x44 else "L"
                 log(f"[hotkey] Ctrl+{key} word={word!r}")
-                self.q.put(("save" if vk == 0x44 else "lookup", None))
+                self.q.put(("save" if vk == 0x44 else "lookup", word))
                 return True
             return False
         if not self.bar.visible:
@@ -769,9 +799,9 @@ class App:
                 elif kind == "toggle":
                     self._toggle()
                 elif kind == "save":
-                    self._save_word()
+                    self._save_word(payload)
                 elif kind == "lookup":
-                    self._open_lookup()
+                    self._open_lookup(payload)
                 elif kind == "hide":
                     self.bar.hide()
                 elif kind == "ui":                 # 托盘线程投递过来的 UI 动作
@@ -811,11 +841,13 @@ class App:
                 pass
         self._hide_timer = self.root.after(1500, self.bar.hide)
 
-    def _save_word(self):
+    def _save_word(self, word=None):
         """Ctrl+D：把当前词加入生词本。"""
         if self.wb is None:
             return
-        word = self._word or current_word(self.hook.buffer)
+        word = (word
+                or current_word(getattr(self.hook, "buffer", ""))
+                or self._word or "")
         if not word:
             return
         info = self.eng.analyze(word)
