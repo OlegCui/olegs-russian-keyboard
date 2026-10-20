@@ -76,6 +76,11 @@ EXAMPLES_FILE = _first_existing(
     os.path.join(BUNDLE, "ru-examples.tsv"),
 )
 
+CARDS_FILE = _first_existing(
+    os.path.join(BUNDLE, "..", "data", "ru-cards.tsv"),
+    os.path.join(BUNDLE, "ru-cards.tsv"),
+)
+
 SETTINGS_FILE = user_path("settings.json")
 RULES_USER = user_path("rules.json")        # 用户可改的规则卡（优先于内置）
 FREQ_FILE = user_path("user_freq.json")
@@ -94,6 +99,7 @@ SRC = {
         "bigram": NGRAM_FILE,
         "trigram": TRIGRAM_FILE,
         "examples": EXAMPLES_FILE,
+        "cards": CARDS_FILE,
 }
 
 

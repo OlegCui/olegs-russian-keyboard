@@ -257,6 +257,12 @@ class LookupWindow:
         out = format_card(self.eng, w)
         if w and self.app is not None:
             try:
+                card = self.app.card_of(w)
+            except Exception:
+                card = ""
+            if card:
+                out += "\n\n" + card + "\n"
+            try:
                 ex = self.app.example_of(w)
             except Exception:
                 ex = ""

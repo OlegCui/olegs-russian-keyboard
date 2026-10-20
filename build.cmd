@@ -15,6 +15,7 @@ set NAME=OlegsRussianKeyboard
   --add-data "%ROOT%data\ru-bigram.tsv;." ^
   --add-data "%ROOT%data\ru-trigram.tsv;." ^
   --add-data "%ROOT%data\ru-examples.tsv;." ^
+  --add-data "%ROOT%data\ru-cards.tsv;." ^
   --collect-all pymorphy3 ^
   --collect-all pymorphy3_dicts_ru ^
   --hidden-import tray ^

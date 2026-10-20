@@ -51,7 +51,7 @@ WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
 VERBOSE = False          # 由 main() 按 --verbose 设置
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -886,6 +886,16 @@ class App:
         except Exception as e:
             log(f"[配置] 例句库加载失败: {e}")
 
+        # 深度卡（释义/支配结构/搭配/辨析/常见错误）
+        self.cards = None
+        try:
+            import cards as cards_mod
+            import paths as _cp
+            self.cards = cards_mod.Cards(getattr(_cp, "CARDS_FILE", None))
+            log(f"[配置] 深度卡: {len(self.cards)} 张")
+        except Exception as e:
+            log(f"[配置] 深度卡加载失败: {e}")
+
         # 查词历史（Ctrl+L 里有用的词，往往是没记住的）
         self.history = []
         try:
@@ -1495,6 +1505,19 @@ class App:
         if reason not in self._skip_seen:
             self._skip_seen.add(reason)
             log(f"[skip] 在 {reason} 里不弹候选条")
+
+    def card_of(self, word):
+        """取一个词的深度卡（按原形匹配），没有就返回空串。"""
+        if self.cards is None:
+            return ""
+        try:
+            rec = self.cards.get(word, self.eng.morph)
+            if not rec:
+                return ""
+            import cards as cards_mod
+            return cards_mod.format_card(rec)
+        except Exception:
+            return ""
 
     def example_of(self, word):
         """给一个词找例句（按原形匹配）。"""
