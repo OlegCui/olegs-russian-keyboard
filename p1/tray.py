@@ -113,12 +113,6 @@ def start(app):
     def on_font_reset(icon=None, item=None):
         ui(lambda: app.bump_font(0))
 
-    def on_pet_on(icon=None, item=None):
-        ui(lambda: app.set_pet(True))
-
-    def on_pet_off(icon=None, item=None):
-        ui(lambda: app.set_pet(False))
-
     def on_theme_dark(icon=None, item=None):
         ui(lambda: app.apply_theme("dark"))
 
@@ -157,10 +151,6 @@ def start(app):
             MenuItem("增大 +2", on_font_big),
             MenuItem("减小 -2", on_font_small),
             MenuItem("恢复默认", on_font_reset),
-        )),
-        MenuItem("桌宠", Menu(
-            MenuItem("显示（右下角）", on_pet_on),
-            MenuItem("隐藏", on_pet_off),
         )),
         MenuItem("主题", Menu(
             MenuItem("深色", on_theme_dark),

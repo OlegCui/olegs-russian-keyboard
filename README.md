@@ -207,9 +207,6 @@ python p1/app.py
 
 - `theme`：**`dark`（默认）/ `light` / `auto`**，`auto` 跟随 Windows 的"应用模式"
 - `next_word`：下一个词预测，默认 `true`；不想要就设为 `false`
-- `pet`：右下角桌宠（卡通布偶猫），默认 `true`；`false` 退回底部状态条
-- `pet_position`：桌宠位置 `[x, y]`，拖动后自动记录
-- `pet_image`：换成你自己的图（PNG，透明背景），例如 `"D:\\img\\cat.png"`
 - `font_size`：候选条字号（像素）。**默认 28，固定不变，不跟随正文**
   （之前的"跟随正文"会在不同程序间忽大忽小，已废弃）
 - `exclude_apps`：这些程序里不弹候选条（密码管理器已默认排除）
