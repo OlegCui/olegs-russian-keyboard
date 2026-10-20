@@ -369,6 +369,11 @@ class WordBook:
             detail.config(state="normal")
             detail.delete("1.0", "end")
             detail.insert("1.0", txt)
+            try:
+                import lookup
+                lookup.apply_cjk_font(detail, 11)
+            except Exception:
+                pass
             detail.config(state="disabled")
 
         def on_select(_e=None):

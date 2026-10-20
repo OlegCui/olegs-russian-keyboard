@@ -4,6 +4,7 @@
 
 不含中文释义（那是另一件事），专注"这个词现在是什么、该怎么变"。
 """
+import re
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -115,6 +116,24 @@ def format_card(eng, word):
         pass
 
     return "\n".join(lines)
+
+
+CJK_RE = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+")
+
+
+def apply_cjk_font(widget, size=11):
+    """把中文段落换成雅黑。
+
+    Consolas 没有中文字形，Windows 会回落到别的字体，大小、基线都不一致；
+    俄语字母仍用等宽，表格才对得齐。
+    """
+    try:
+        widget.tag_configure("zh", font=("Microsoft YaHei UI", size))
+        content = widget.get("1.0", "end-1c")
+        for m in CJK_RE.finditer(content):
+            widget.tag_add("zh", f"1.0+{m.start()}c", f"1.0+{m.end()}c")
+    except Exception:
+        pass
 
 
 class LookupWindow:
@@ -275,6 +294,7 @@ class LookupWindow:
         self.text.config(state="normal")
         self.text.delete("1.0", "end")
         self.text.insert("1.0", out)
+        apply_cjk_font(self.text, 11)
         self.text.config(state="disabled")
         return out
 

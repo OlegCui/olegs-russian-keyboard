@@ -51,7 +51,7 @@ WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
 VERBOSE = False          # 由 main() 按 --verbose 设置
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -136,7 +136,13 @@ def foreground_title():
     return buf.value[:40]
 
 
+def _no_ctrl(text):
+    """去掉控制字符：Ctrl+L 之类会往缓冲里塞 \x0c。"""
+    return "".join(c for c in (text or "") if ord(c) >= 32)
+
+
 def current_word(text):
+    text = _no_ctrl(text)
     i = len(text)
     while i > 0 and text[i - 1] not in SEP:
         i -= 1
@@ -144,6 +150,7 @@ def current_word(text):
 
 
 def previous_word(text):
+    text = _no_ctrl(text)
     """刚打完一个词（以空格/标点结尾）时，取它前面的那个词，用于预测下一个词。"""
     body = text.rstrip()
     if not body:
@@ -157,6 +164,7 @@ def previous_word(text):
 
 
 def previous_words(text, n=2):
+    text = _no_ctrl(text)
     """取结尾处最近 n 个完整词（从旧到新）。用于三元组预测。
 
     和 previous_word 的区别：这里允许单字母词（я / в / и / с / к），
@@ -927,6 +935,9 @@ class App:
             word = current_word(getattr(self.hook, "buffer", ""))
             # 没在打字（或词是复制来的）→ 用剪贴板里的词
             # 只在按这两个键时读一次剪贴板，不影响 Ctrl+V
+            if not word:
+                # 词后面已经打了空格：查刚打完的那个词，比读剪贴板更符合直觉
+                word = previous_word(getattr(self.hook, "buffer", ""))
             if not word:
                 word = clipboard_word()
             has_ru = any("\u0400" <= c <= "\u04FF" for c in word)

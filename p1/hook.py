@@ -192,6 +192,11 @@ class KeyboardCapture:
             return
         if not ch:
             return
+        # 控制字符绝不能进缓冲：Ctrl+L 会转出 \x0c、Ctrl+V 转出 \x16、
+        # Ctrl+C 转出 \x03。以前它们被当成正文写进 buffer，
+        # 结果 Ctrl+L 查词查到的是控制字符本身（日志里 word='\x0c'）。
+        if ord(ch) < 32:
+            return
         if self.debug:
             print(f"[hook] vk={vk} -> {ch!r}", file=sys.stderr)
         if ch in SEPARATORS:
