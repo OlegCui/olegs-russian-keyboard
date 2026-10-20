@@ -45,7 +45,7 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.1.7"
+VERSION = "0.1.8"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -654,6 +654,8 @@ class App:
         self.tray = None
         self._wb_win = None
         self.exclude = set(DEFAULT_EXCLUDE)
+        self.auto_space = True         # 选词后自动补空格
+        self.auto_capital = True       # 句首/专有名词首字母大写
         self.font_by_app = {}
         self._font_seen = set()
         self._skip_seen = set()
@@ -954,25 +956,38 @@ class App:
         else:
             log(f"[pick] 索引 {idx} 越界（共 {len(self.bar.items)} 项）")
 
+    def _autocap(self, new, word):
+        """句首、或专有名词 → 首字母大写。"""
+        if not new or new[:1].isupper():
+            return new
+        buf = ""
+        try:
+            buf = self.hook.buffer
+        except Exception:
+            pass
+        if self.auto_capital:
+            idx = buf.rfind(word) if word else -1
+            before = buf[:idx].rstrip() if idx >= 0 else ""
+            at_start = (not before) or (before[-1] in ".!?…\n\r")
+            if at_start:
+                return new[:1].upper() + new[1:]
+            try:
+                if self.eng.is_proper(new):
+                    return new[:1].upper() + new[1:]
+            except Exception:
+                pass
+        return new
+
     def _pick_space(self):
-        """空格选 1 号候选，然后把空格补上，打字不断流。"""
+        """空格选 1 号候选（和点选走同一条路径，带自动空格）。"""
         if not self.bar.items:
             return
         item = self.bar.items[0]
-        ok = self._accept(item)
-        log(f"[space] 空格选 1 号 {item['form']!r} ok={ok}")
-        if ok:
-            try:
-                self.hook.pause()
-                time.sleep(0.03)
-                input_sim.send_text(" ")
-                time.sleep(0.03)
-            finally:
-                self.hook.resume()
-            self.hook.buffer += " "
+        log(f"[space] 空格选 1 号 {item['form']!r}")
+        self._accept(item)
 
-    def _accept(self, item):
-        """点选候选词：删掉已输入的部分，注入选中的词形。"""
+    def _accept(self, item, add_space=None):
+        """选中候选词：删掉已输入的部分，注入选中的词形（可自动空格）。"""
         try:
             buf = self.hook.buffer
             word = current_word(buf)
@@ -980,18 +995,25 @@ class App:
             new = item["form"]
             if word[:1].isupper() and new:
                 new = new[:1].upper() + new[1:]
+            else:
+                new = self._autocap(new, word)
+            if add_space is None:
+                add_space = self.auto_space
             fg_before = user32.GetForegroundWindow()
-            log(f"[accept] 点了 {item['form']!r} | 当前词={word!r} 退格={n} "
-                f"| 前台={fg_before:#x} {foreground_title()!r}")
+            log(f"[accept] 选了 {item['form']!r} -> {new!r} | 当前词={word!r} 退格={n} "
+                f"| 自动空格={add_space} | 前台={fg_before:#x} {foreground_title()!r}")
             self.hook.pause()
             try:
                 ok = input_sim.replace_tail(n, new)
                 time.sleep(0.05)
+                if ok and add_space:
+                    input_sim.send_text(" ")
+                    time.sleep(0.04)
             finally:
                 self.hook.resume()
             fg_after = user32.GetForegroundWindow()
             # 注入期间钩子被暂停，这里手动把缓冲对齐到真实情况
-            self.hook.buffer = buf[:len(buf) - n] + new
+            self.hook.buffer = buf[:len(buf) - n] + new + (" " if add_space else "")
             # 强信号：用户从候选条里选了这个词
             if self.eng.uf:
                 self.eng.uf.add(new, 2)
@@ -1436,6 +1458,12 @@ def _run_main():
         app.font_by_app = {str(k).strip().lower(): int(v)
                            for k, v in fba.items() if v}
         log(f"[配置] 按程序指定字号: {app.font_by_app}")
+
+    if "auto_space" in cfg_data:
+        app.auto_space = bool(cfg_data["auto_space"])
+    if "auto_capital" in cfg_data:
+        app.auto_capital = bool(cfg_data["auto_capital"])
+    log(f"[配置] 自动空格={app.auto_space}  自动大写={app.auto_capital}")
     log(f"[配置] 规则卡: {app.eng.rules_path}（{len(app.eng.cards)} 张）")
     _d = app.eng.dic
     if _d:

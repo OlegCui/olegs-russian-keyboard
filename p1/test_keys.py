@@ -56,6 +56,16 @@ def main():
 
     app_mod.input_sim.replace_tail = fake_replace
 
+    def fake_send(text):
+        # 自动空格也走注入，同样必须打桩，否则会打到真实窗口里
+        cur = ent.get()
+        ent.delete(0, "end")
+        ent.insert(0, cur + text)
+        tw.update()
+        return True
+
+    app_mod.input_sim.send_text = fake_send
+
     h = app.bar.hwnd()
     ex = user32.GetWindowLongW(h, GWL_EXSTYLE)
     noact = bool(ex & WS_EX_NOACTIVATE)
@@ -95,13 +105,14 @@ def main():
               f"全部被拦截={handled_all} {'PASS' if ok else 'FAIL'}")
 
     print("\n--- 键盘选择 ---")
-    case("数字 2 直选", "другу", [VK["2"]], "друга")
-    case("数字 1 直选", "другу", [VK["1"]], "друг")
-    case("→ 一次 + Tab", "другу", [VK["RIGHT"], VK["TAB"]], "друга")
-    case("→ 一次 + Enter", "другу", [VK["RIGHT"], VK["ENTER"]], "друга")
-    case("← 一次 + Enter", "другу", [VK["LEFT"], VK["ENTER"]], "друга")
+    # 期望值含两个新行为：自动补空格 + 句首首字母大写
+    case("数字 2 直选", "другу", [VK["2"]], "Друга ")
+    case("数字 1 直选", "другу", [VK["1"]], "Друг ")
+    case("→ 一次 + Tab", "другу", [VK["RIGHT"], VK["TAB"]], "Друга ")
+    case("→ 一次 + Enter", "другу", [VK["RIGHT"], VK["ENTER"]], "Друга ")
+    case("← 一次 + Enter", "другу", [VK["LEFT"], VK["ENTER"]], "Друга ")
     case("← 两次 + Tab", "другу", [VK["LEFT"], VK["LEFT"], VK["TAB"]],
-         "друг")
+         "Друг ")
 
     print("\n--- 未显示时不该拦截 ---")
     app.bar.hide()

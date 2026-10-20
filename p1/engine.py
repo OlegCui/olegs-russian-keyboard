@@ -221,6 +221,19 @@ class Engine:
                 self._uf = False
         return self._uf or None
 
+    # 专有名词标记：人名 / 姓 / 父称 / 地名 / 机构 / 商标
+    PROPER_TAGS = frozenset(("Name", "Surn", "Patr", "Geox", "Orgn", "Trad"))
+
+    def is_proper(self, word):
+        """是不是专有名词。只看最可能的那个解读，避免把 вера(信仰) 当成 Ве́ра。"""
+        try:
+            ps = self.morph.parse(word.strip(PUNCT))
+            if ps:
+                return bool(self.PROPER_TAGS & set(ps[0].tag.grammemes))
+        except Exception:
+            pass
+        return False
+
     def complete(self, token, limit=6):
         """补全在前，更正在后（变格是另一套视图，Tab 切换）。"""
         w = token.strip(PUNCT).lower()

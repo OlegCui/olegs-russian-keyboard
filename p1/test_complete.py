@@ -32,6 +32,7 @@ def main():
         return True
 
     app_mod.input_sim.replace_tail = fake_replace
+    app_mod.input_sim.send_text = lambda text: (injected.append(("space", text)), True)[1]
 
     app.start()
     app.root.after(40, app.pump)
