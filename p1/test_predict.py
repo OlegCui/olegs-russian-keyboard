@@ -104,10 +104,20 @@ def main():
     check("候选", forms, ["знаю", "могу"])
     ok_all = ok_all and mode_ok and bool(forms)
 
+    # 预测模式下数字键必须放行（否则想打 "10" 会插进一个词）
+    check("预测模式按 1 不拦截", app._maybe_intercept(0x31), False)
+
     injected.clear()
-    app._maybe_intercept(0x31)            # 数字 1
+    check("预测模式按 Tab 拦截", app._maybe_intercept(0x09), True)
     pump()
-    check("注入（词 + 自动空格）", injected, [("back", 0, "знаю"), ("text", " ")])
+    check("Tab 选词（词 + 自动空格）", injected,
+          [("back", 0, "знаю"), ("text", " ")])
+
+    # 补全模式下数字仍然直选
+    app.hook.buffer = "прив"
+    app._update("прив")
+    pump()
+    check("补全模式按 1 仍直选", app._maybe_intercept(0x31), True)
 
     # 刚选完立刻不该又弹预测
     app._update("я не знаю ")

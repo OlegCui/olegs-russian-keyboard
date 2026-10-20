@@ -50,7 +50,8 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.6.0"
+VERBOSE = False          # 由 main() 按 --verbose 设置
+VERSION = "0.6.2"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -70,6 +71,25 @@ except Exception:
 _LOG_FH = None
 
 
+LOG_MAX_BYTES = 2 * 1024 * 1024      # 单个日志上限 2 MB
+
+
+def _rotate_log():
+    """日志超过上限就挪成 app.log.1，避免长期使用把磁盘写满。"""
+    try:
+        import os
+        if os.path.exists(LOGFILE) and os.path.getsize(LOGFILE) > LOG_MAX_BYTES:
+            old = LOGFILE + ".1"
+            try:
+                if os.path.exists(old):
+                    os.remove(old)
+            except Exception:
+                pass
+            os.replace(LOGFILE, old)
+    except Exception:
+        pass
+
+
 def log(msg):
     """同时写屏幕和日志文件，方便用户回传。"""
     global _LOG_FH
@@ -80,6 +100,7 @@ def log(msg):
         pass
     try:
         if _LOG_FH is None:
+            _rotate_log()
             _LOG_FH = open(LOGFILE, "a", encoding="utf-8")
         _LOG_FH.write(line + "\n")
         _LOG_FH.flush()
@@ -893,6 +914,10 @@ class App:
             self.q.put(("move", -1 if vk == 0x25 else 1))
             return True
         if 0x31 <= vk <= 0x36:               # 数字 1-6 直选
+            # 预测模式下不抢数字：那会儿你大概率想打 "10"、"2 小时" 这种数字，
+            # 抢了就会插入一个词，很莫名。预测项用 Tab 或鼠标点选。
+            if self._mode == "predict":
+                return False
             self.q.put(("pick", vk - 0x31))
             return True
         if vk == 0x20:                       # 空格：直接选 1 号候选，并补一个空格
@@ -1253,8 +1278,15 @@ class App:
             finally:
                 self.hook.resume()
             fg_after = user32.GetForegroundWindow()
-            # 注入期间钩子被暂停，这里手动把缓冲对齐到真实情况
-            self.hook.buffer = buf[:len(buf) - n] + new + (" " if add_space else "")
+            # 注入期间钩子被暂停，这里手动把缓冲对齐到真实情况。
+            # 注入失败时绝不能假装成功：缓冲会和真实文本错位，
+            # 下一次补全就会按错的字数退格，把用户已经打好的字删掉。
+            if ok:
+                self.hook.buffer = (buf[:len(buf) - n] + new
+                                    + (" " if add_space else ""))
+            else:
+                self.hook.buffer = ""
+                log("[accept] 注入失败：清空缓冲，避免下次退格删错字")
             self._accepted_at = time.time()
             # 强信号：用户从候选条里选了这个词
             if self.eng.uf:
@@ -1292,6 +1324,22 @@ class App:
     def _update_inner(self, text):
         t = time.perf_counter
         t0 = t()
+        # 换了前台窗口：光标所在的位置、上下文全变了，
+        # 我们的缓冲只认键盘，继续按字数退格会删到别人家的字。清空最安全。
+        # （不用 GetAsyncKeyState 的鼠标标志位：那个标志位是进程级的，
+        #   查询一次就清零，判断不可靠）
+        try:
+            fg = user32.GetForegroundWindow()
+            if fg != getattr(self, "_last_fg", fg):
+                if self.hook.buffer:
+                    log("[guard] 前台窗口变化，清空缓冲")
+                self.hook.buffer = ""
+                self.bar.hide()
+                self._last_fg = fg
+                return
+            self._last_fg = fg
+        except Exception:
+            pass
         word = current_word(text)
 
         # 一个词刚结束（以空格/标点收尾）→ 预测下一个词
@@ -1703,7 +1751,12 @@ def _run_main():
     ap.add_argument("--lookup", nargs="?", const="", default=None,
                     help="打开形式词典，可带一个词，如 --lookup другу")
     ap.add_argument("--version", action="store_true", help="打印版本号后退出")
+    ap.add_argument("--verbose", action="store_true",
+                    help="记录每一次按键（排错时才用，日志会变大）")
     a = ap.parse_args()
+
+    global VERBOSE
+    VERBOSE = bool(getattr(a, "verbose", False))
 
     if a.version:
         print(f"Oleg's Russian Keyboard v{VERSION}")
@@ -1750,7 +1803,7 @@ def _run_main():
     else:
         log(f"[配置] 候选条字号固定为 {BAR_FONT_PX}px（默认，不跟随正文）")
 
-    app = App(require_lang=lang, verbose=True, font_override=fs)
+    app = App(require_lang=lang, verbose=VERBOSE, font_override=fs)
 
     extra = cfg_data.get("exclude_apps") or []
     if extra:
@@ -1769,6 +1822,15 @@ def _run_main():
     if "next_word" in cfg_data:
         app.next_word = bool(cfg_data["next_word"])
     log(f"[配置] 下一个词预测={app.next_word}")
+    # 预热：第一次打字不应该比别人慢一拍
+    try:
+        app.eng.complete("прив")
+        app.eng.suggest("друг")
+        app.eng.predict(["я", "не"])
+        log("[配置] 预热完成")
+    except Exception as _e:
+        log(f"[配置] 预热失败: {_e}")
+
     try:
         _p = app.eng.predictor
         if _p:
