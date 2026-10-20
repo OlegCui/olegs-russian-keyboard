@@ -145,37 +145,46 @@ class LookupWindow:
 
     def __init__(self, root, eng):
         import tkinter as tk
+        import tkinter.ttk as ttk
         self.eng = eng
         self.win = tk.Toplevel(root)
         self.win.title("俄语形式词典")
-        self.win.geometry("640x600+360+120")
+        self.win.geometry("680x620+360+120")
         # 不能 transient：root 是 withdraw 状态，transient 子窗口会被一起藏掉
         self.win.attributes("-topmost", True)
         self.win.after(400, lambda: self.win.attributes("-topmost", False))
 
+        try:
+            ttk.Style(self.win).theme_use("vista")   # 原生 Windows 控件外观
+        except Exception:
+            pass
+
         top = tk.Frame(self.win)
-        top.pack(fill="x", padx=10, pady=8)
-        self.entry = tk.Entry(top, font=("Consolas", 16))
-        self.entry.pack(side="left", fill="x", expand=True)
+        top.pack(fill="x", padx=12, pady=10)
+        self.entry = tk.Entry(top, font=("Segoe UI", 14), relief="solid",
+                              bd=1, highlightthickness=0)
+        self.entry.pack(side="left", fill="x", expand=True, ipady=4)
         self.entry.bind("<Return>", lambda e: self.query(self.entry.get()))
-        tk.Button(top, text="查询", command=lambda: self.query(self.entry.get())
-                  ).pack(side="left", padx=(8, 0))
+        ttk.Button(top, text="查询", command=lambda: self.query(self.entry.get())
+                   ).pack(side="left", padx=(8, 0))
 
         body = tk.Frame(self.win)
-        body.pack(fill="both", expand=True, padx=10, pady=(0, 8))
-        sb = tk.Scrollbar(body)
+        body.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        sb = ttk.Scrollbar(body)
         sb.pack(side="right", fill="y")
         self.text = tk.Text(body, font=("Consolas", 12), wrap="none",
-                            yscrollcommand=sb.set, padx=8, pady=6)
+                            relief="solid", bd=1, yscrollcommand=sb.set,
+                            padx=10, pady=8, highlightthickness=0)
         self.text.pack(side="left", fill="both", expand=True)
         sb.config(command=self.text.yview)
         self.text.insert("1.0", "输入一个俄语词，按回车查询。")
         self.text.config(state="disabled")
 
         btns = tk.Frame(self.win)
-        btns.pack(fill="x", padx=10, pady=(0, 10))
-        tk.Button(btns, text="复制结果", command=self._copy).pack(side="left")
-        tk.Button(btns, text="清空", command=lambda: self.query("")).pack(side="left", padx=8)
+        btns.pack(fill="x", padx=12, pady=(0, 12))
+        ttk.Button(btns, text="复制结果", command=self._copy).pack(side="left")
+        ttk.Button(btns, text="清空",
+                   command=lambda: self.query("")).pack(side="left", padx=8)
 
         self.entry.focus_set()
 

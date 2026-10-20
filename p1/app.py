@@ -39,13 +39,17 @@ import input_sim
 import probe as probe_mod
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
+try:
+    dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
+except Exception:              # 很老的 Windows 没有 dwmapi
+    dwmapi = None
 GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -145,6 +149,36 @@ def _top_hwnd(win):
     return user32.GetAncestor(child, 2) or child
 
 
+def round_corners(win):
+    """Windows 11 圆角（DWMWA_WINDOW_CORNER_PREFERENCE = 33，ROUND = 2）。"""
+    try:
+        h = _top_hwnd(win)
+        pref = ctypes.c_int(2)
+        dwmapi.DwmSetWindowAttribute(h, 33, ctypes.byref(pref),
+                                     ctypes.sizeof(pref))
+    except Exception:
+        pass
+
+
+def accent_color():
+    """系统强调色（设置 → 个性化 → 颜色）。取不到就用 Win11 默认蓝。"""
+    try:
+        val = ctypes.c_uint32()
+        opaque = ctypes.c_int()
+        dwmapi.DwmGetColorizationColor(ctypes.byref(val), ctypes.byref(opaque))
+        v = val.value
+        r, g, b = (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF
+        if r + g + b < 90:          # 太暗（近黑）时用默认蓝，否则看不出选中
+            return "#0067c0"
+        # 稍微提亮，深色背景上才醒目
+        r = min(255, int(r * 1.15) + 10)
+        g = min(255, int(g * 1.15) + 10)
+        b = min(255, int(b * 1.15) + 10)
+        return f"#{r:02x}{g:02x}{b:02x}"
+    except Exception:
+        return "#0067c0"
+
+
 def make_no_activate(win):
     """WS_EX_NOACTIVATE 必须加在**顶层**窗口上，加在子窗口上完全无效。"""
     h = _top_hwnd(win)
@@ -173,9 +207,14 @@ class Bar:
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
         self.win.withdraw()
-        self.bg = "#1f2226"
+        # Windows 11 深色浮层配色
+        self.bg = "#252525"
+        self.border = "#3d3d3d"
+        self.cell_bg = "#323232"
+        self.cell_hover = "#3d3d3d"
+        self.accent = accent_color()
         self.win.configure(bg=self.bg)
-        self.outer = tk.Frame(self.win, bg=self.bg, highlightbackground="#3a3f45",
+        self.outer = tk.Frame(self.win, bg=self.bg, highlightbackground=self.border,
                               highlightthickness=1)
         self.outer.pack(fill="both", expand=True)
         make_no_activate(self.win)
@@ -210,50 +249,60 @@ class Bar:
             c.destroy()
 
         head = tk.Frame(self.outer, bg=self.bg)
-        head.pack(fill="x", padx=9, pady=(6, 1))
+        head.pack(fill="x", padx=12, pady=(9, 2))
         tk.Label(head, text=data.get("lemma", data["token"]), bg=self.bg,
-                 fg="#e6edf3",
-                 font=("Segoe UI", -max(13, int(fs * 0.78)), "bold")).pack(side="left")
+                 fg="#ffffff",
+                 font=("Segoe UI Semibold", -max(13, int(fs * 0.76)), "bold")
+                 ).pack(side="left")
         cur = data.get("current") or {}
         tag = " · ".join(x for x in [cur.get("pos_zh"), cur.get("case_zh")] if x)
         if tag:
-            tk.Label(head, text="  " + tag, bg=self.bg, fg="#8a9199",
-                     font=("Microsoft YaHei", -max(10, int(fs * 0.6)))).pack(side="left")
-        tk.Label(head, text="空格选1号 · 1-6 · ←/→ · Enter 保留原样 · Ctrl+D 收藏 · Ctrl+L 查词",
-                 bg=self.bg, fg="#5c656d",
-                 font=("Microsoft YaHei", -max(9, int(fs * 0.52)))).pack(side="right")
+            tk.Label(head, text="  " + tag, bg=self.bg, fg="#a8a8a8",
+                     font=("Microsoft YaHei UI", -max(10, int(fs * 0.58)))
+                     ).pack(side="left")
+        tk.Label(head, text="空格选1 · 1-6 · ←/→ · Enter 保留",
+                 bg=self.bg, fg="#7a7a7a",
+                 font=("Microsoft YaHei UI", -max(9, int(fs * 0.5)))
+                 ).pack(side="right")
 
         row = tk.Frame(self.outer, bg=self.bg)
-        row.pack(fill="x", padx=5, pady=(0, 6))
+        row.pack(fill="x", padx=7, pady=(3, 8))
         self.cells = []
         for i, it in enumerate(self.items):
             sel = (i == self.selected)
-            cell = tk.Frame(row, bg="#3b6ea5" if sel else "#2c3136",
-                            cursor="hand2")
-            cell.pack(side="left", padx=2)
-            l1 = tk.Label(cell, text=it["form"], bg=cell["bg"], fg="#ffffff",
-                          font=("Consolas", -fs, "bold"))
-            l1.pack(padx=max(6, int(fs * 0.55)), pady=(3, 0))
+            cell = tk.Frame(row, bg=self.accent if sel else self.cell_bg,
+                            cursor="hand2", highlightthickness=0)
+            cell.pack(side="left", padx=3)
+            l1 = tk.Label(cell, text=it["form"],
+                          bg=cell["bg"], fg="#ffffff",
+                          font=("Segoe UI Semibold", -fs, "bold"))
+            l1.pack(padx=max(10, int(fs * 0.7)), pady=(5, 0))
             l2 = tk.Label(cell, text=f"{i + 1}  {it['label']}", bg=cell["bg"],
-                          fg="#c8d0d8",
-                          font=("Microsoft YaHei", -max(10, int(fs * 0.6))))
-            l2.pack(padx=7, pady=(0, 3))
+                          fg="#dcdcdc" if sel else "#a8a8a8",
+                          font=("Microsoft YaHei UI", -max(10, int(fs * 0.56))))
+            l2.pack(padx=10, pady=(0, 5))
             for w in (cell, l1, l2):
                 w.bind("<Button-1>", lambda e, x=it: self._click(x))
+            if not sel:                      # 鼠标悬停
+                for w in (cell, l1, l2):
+                    w.bind("<Enter>", lambda e, c=cell, a=l1, b=l2:
+                           self._hover(c, a, b, True))
+                    w.bind("<Leave>", lambda e, c=cell, a=l1, b=l2:
+                           self._hover(c, a, b, False))
             self.cells.append((cell, it))
 
         findings = data.get("findings") or []
         if findings:
             f = findings[0]
-            tk.Label(self.outer, text=f"⚠ {f['title']}", bg="#2a2320", fg="#ffb74d",
-                     font=("Microsoft YaHei", -max(10, int(fs * 0.62))),
-                     anchor="w").pack(fill="x", padx=9, pady=(0, 5))
+            tk.Label(self.outer, text=f"⚠ {f['title']}", bg="#332a1f", fg="#ffb74d",
+                     font=("Microsoft YaHei UI", -max(10, int(fs * 0.58))),
+                     anchor="w").pack(fill="x", padx=12, pady=(0, 6))
 
         hint = data.get("hint")
         if hint:
-            tk.Label(self.outer, text=hint, bg=self.bg, fg="#5c656d",
-                     font=("Microsoft YaHei", -max(9, int(fs * 0.52))),
-                     anchor="e").pack(fill="x", padx=9, pady=(0, 4))
+            tk.Label(self.outer, text=hint, bg=self.bg, fg="#7a7a7a",
+                     font=("Microsoft YaHei UI", -max(9, int(fs * 0.5))),
+                     anchor="e").pack(fill="x", padx=12, pady=(0, 6))
 
         self.win.update_idletasks()
         self.visible = True
@@ -265,6 +314,17 @@ class Bar:
         self.navigated = True
         self.render(self.data, keep_sel=True)
 
+    def _hover(self, cell, l1, l2, on):
+        """鼠标移上去给一点反馈，不然看不出哪块能点。"""
+        try:
+            if cell["bg"] == self.accent:
+                return                    # 选中项不跟随悬停变色
+            bg = self.cell_hover if on else self.cell_bg
+            for w in (cell, l1, l2):
+                w.configure(bg=bg)
+        except Exception:
+            pass
+
     def show_at(self, x, y):
         w = self.win.winfo_reqwidth()
         h = self.win.winfo_reqheight()
@@ -274,6 +334,7 @@ class Bar:
         self.win.geometry(f"{w}x{h}+{x}+{y}")
         self.win.deiconify()
         make_no_activate(self.win)     # 每次显示后重刷，防止被 Tk 重置
+        round_corners(self.win)        # Win11 圆角
         self.last = (x, y, w, h)
 
     def hide(self):
@@ -293,17 +354,17 @@ class StatusPill:
         self.win = tk.Toplevel(root)
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
-        self.bg = "#1f2226"
+        self.bg = "#252525"
         self.win.configure(bg=self.bg)
-        self.frame = tk.Frame(self.win, bg=self.bg, highlightbackground="#3a3f45",
+        self.frame = tk.Frame(self.win, bg=self.bg, highlightbackground="#3d3d3d",
                               highlightthickness=1)
         self.frame.pack()
         self.dot = tk.Label(self.frame, text="●", bg=self.bg, fg="#ffb74d",
                             font=("Segoe UI", -12))
-        self.dot.pack(side="left", padx=(8, 2), pady=5)
+        self.dot.pack(side="left", padx=(10, 4), pady=6)
         self.label = tk.Label(self.frame, text="启动中…", bg=self.bg,
-                              fg="#c8d0d8", font=("Microsoft YaHei", -12))
-        self.label.pack(side="left", padx=(0, 8), pady=5)
+                              fg="#e6e6e6", font=("Microsoft YaHei UI", -12))
+        self.label.pack(side="left", padx=(0, 10), pady=6)
 
         for w in (self.win, self.frame, self.dot, self.label):
             w.bind("<Button-3>", self._menu)
@@ -325,6 +386,7 @@ class StatusPill:
         x = l + max(0, (r - l - w) // 2)
         y = b - h - 24
         self.win.geometry(f"{w}x{h}+{x}+{y}")
+        round_corners(self.win)
 
     # ---------- 显示 / 隐藏 ----------
     def set(self, text, ok=None, autohide=6000):

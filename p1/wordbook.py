@@ -108,11 +108,17 @@ class WordBook:
     # ---------- 查看窗口（列表 + 词形详情） ----------
     def show_window(self, root=None, eng=None):
         import tkinter as tk
+        import tkinter.ttk as ttk
         from tkinter import messagebox
         own = root is None
         win = tk.Toplevel(root) if root else tk.Tk()
         win.title(f"生词本 · {len(self.words)} 词")
         win.geometry("1000x620+240+120")
+
+        try:
+            ttk.Style(win).theme_use("vista")     # 原生 Windows 控件外观
+        except Exception:
+            pass
 
         if eng is None:
             try:
@@ -122,31 +128,33 @@ class WordBook:
                 eng = None
 
         bar = tk.Frame(win)
-        bar.pack(fill="x", padx=10, pady=8)
+        bar.pack(fill="x", padx=12, pady=10)
         tk.Label(bar, text=f"共 {len(self.words)} 个词",
-                 font=("Microsoft YaHei", 10)).pack(side="left")
+                 font=("Microsoft YaHei UI", 10)).pack(side="left")
         tk.Label(bar, text=f"  导出: {self.md_path}",
-                 fg="#888", font=("Microsoft YaHei", 8)).pack(side="left")
+                 fg="#888", font=("Microsoft YaHei UI", 8)).pack(side="left")
 
         paned = tk.PanedWindow(win, orient="horizontal", sashwidth=6)
-        paned.pack(fill="both", expand=True, padx=10, pady=(0, 8))
+        paned.pack(fill="both", expand=True, padx=12, pady=(0, 10))
 
         # 左：词表
         left = tk.Frame(paned)
-        sb = tk.Scrollbar(left)
+        sb = ttk.Scrollbar(left)
         sb.pack(side="right", fill="y")
-        lb = tk.Listbox(left, font=("Consolas", 12), yscrollcommand=sb.set,
-                        width=42, activestyle="none")
+        lb = tk.Listbox(left, font=("Segoe UI", 12), yscrollcommand=sb.set,
+                        width=42, activestyle="none", relief="solid", bd=1,
+                        highlightthickness=0)
         lb.pack(side="left", fill="both", expand=True)
         sb.config(command=lb.yview)
         paned.add(left, minsize=280)
 
         # 右：词形详情
         right = tk.Frame(paned)
-        dsb = tk.Scrollbar(right)
+        dsb = ttk.Scrollbar(right)
         dsb.pack(side="right", fill="y")
         detail = tk.Text(right, font=("Consolas", 11), wrap="none",
-                         yscrollcommand=dsb.set, padx=8, pady=6)
+                         relief="solid", bd=1, yscrollcommand=dsb.set,
+                         padx=10, pady=8, highlightthickness=0)
         detail.pack(side="left", fill="both", expand=True)
         dsb.config(command=detail.yview)
         paned.add(right, minsize=380)
@@ -205,16 +213,27 @@ class WordBook:
         lb.bind("<Double-Button-1>", lambda e: show_detail())
 
         btns = tk.Frame(win)
-        btns.pack(fill="x", padx=10, pady=(0, 10))
-        tk.Button(btns, text="删除选中", command=on_delete).pack(side="left")
-        tk.Button(btns, text="重新导出 Markdown", command=on_export
-                  ).pack(side="left", padx=8)
+        btns.pack(fill="x", padx=12, pady=(0, 12))
+        ttk.Button(btns, text="删除选中", command=on_delete).pack(side="left")
+        ttk.Button(btns, text="重新导出 Markdown", command=on_export
+                   ).pack(side="left", padx=8)
 
         refresh()
         if self.words:
             lb.selection_set(0)
             lb.activate(0)
             show_detail()
+
+        # 主窗口是 withdraw 的，Toplevel 可能被别的程序压在后面，主动置前
+        try:
+            win.deiconify()
+            win.attributes("-topmost", True)
+            win.lift()
+            win.focus_force()
+            win.after(300, lambda: win.attributes("-topmost", False))
+        except Exception:
+            pass
+
         if own:
             win.mainloop()
         return win
