@@ -50,7 +50,7 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -1088,7 +1088,15 @@ class App:
             import paths
             target = paths.RULES_USER
             if not os.path.exists(target):
-                shutil.copyfile(paths.RULES_FILE, target)
+                # 不能直接 copyfile：内置 rules.json 没有 BOM，记事本按 GBK 打开会乱码。
+                # 统一写成带 BOM 的 UTF-8，记事本/Word 都能正确识别中文和俄语。
+                try:
+                    with open(paths.RULES_FILE, encoding="utf-8-sig") as src:
+                        text = src.read()
+                    with open(target, "w", encoding="utf-8-sig") as dst:
+                        dst.write(text)
+                except Exception:
+                    shutil.copyfile(paths.RULES_FILE, target)
                 log(f"[rules] 已复制默认规则到 {target}")
             subprocess.Popen(["notepad.exe", target])
             self.pill.set("已打开规则卡，改完重启生效", True, autohide=4000)

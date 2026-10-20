@@ -100,7 +100,7 @@ class WordBook:
                                   time.localtime(it.get("added") or 0))
                 lines.append(f"| {it['word']} | {it.get('lemma', '')} | {tag} "
                              f"| {it.get('count', 1)} | {t} |")
-            with open(self.md_path, "w", encoding="utf-8") as fh:
+            with open(self.md_path, "w", encoding="utf-8-sig") as fh:
                 fh.write("\n".join(lines) + "\n")
         except Exception as e:
             print(f"[wordbook] 导出 md 失败: {e}", file=__import__("sys").stderr)

@@ -189,9 +189,26 @@ class LookupWindow:
         self.entry.focus_set()
 
     def _copy(self):
+        """复制到剪贴板。
+
+        优先走 win32clipboard 的 CF_UNICODETEXT：Tk 的 clipboard_append 在某些
+        程序里粘出来会变成问号或乱码（俄语、中文都踩过），显式写 Unicode 才稳。
+        """
+        text = self.text.get("1.0", "end").strip()
+        try:
+            import win32clipboard as cb
+            cb.OpenClipboard()
+            try:
+                cb.EmptyClipboard()
+                cb.SetClipboardData(cb.CF_UNICODETEXT, text)
+            finally:
+                cb.CloseClipboard()
+            return
+        except Exception:
+            pass
         try:
             self.win.clipboard_clear()
-            self.win.clipboard_append(self.text.get("1.0", "end").strip())
+            self.win.clipboard_append(text)
         except Exception:
             pass
 
