@@ -50,7 +50,7 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
-VERSION = "0.4.1"
+VERSION = "0.5.0"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -808,6 +808,9 @@ class App:
         self.root.withdraw()
         self.cfg_theme = "dark"          # dark / light / auto
         self.next_word = True            # 下一个词预测
+        self.pet_enabled = True          # 右下角桌宠（关掉就退回底部状态条）
+        self.pet_position = None
+        self.pet_image = None            # 自定义桌宠图片路径（可选）
         self.theme = resolve_theme(self.cfg_theme)
         self.bar = Bar(self.root, theme=self.theme)
         self.bar.on_pick = self._accept
@@ -838,7 +841,21 @@ class App:
         except Exception as e:
             log(f"[wordbook] 初始化失败: {e}")
             self.wb = None
-        self.pill = StatusPill(self.root, self, theme=self.theme)
+        self.pill = None
+        self.pet = None
+        if self.pet_enabled:
+            try:
+                import pet as pet_mod
+                pos = self.pet_position
+                self.pet = pet_mod.DesktopPet(
+                    self.root, self, pos=pos, on_menu=self.show_menu,
+                    image_path=self.pet_image)
+                self.pet.set_theme(self.cfg_theme)
+            except Exception as e:
+                log(f"[pet] 桌宠启动失败，退回状态条: {e}")
+                self.pet = None
+        if self.pet is None:
+            self.pill = StatusPill(self.root, self, theme=self.theme)
         self.hook = hook_mod.KeyboardCapture(
             on_text=lambda t: self.q.put(("text", t)),
             on_word=lambda w: self.q.put(("word", w)),
@@ -912,7 +929,7 @@ class App:
     def _trace_key(self, vk, scan, lang, ch):
         self.key_count += 1
         if self.key_count == 1 or self.key_count % 10 == 0:
-            self.pill.set(f"俄语助手 运行中 · 已收 {self.key_count} 键", True)
+            self.notify(f"俄语助手 运行中 · 已收 {self.key_count} 键", True)
         if not self.verbose:
             return
         want = self.hook.require_lang
@@ -999,7 +1016,7 @@ class App:
                           case=top.get("case_zh") or "",
                           app=foreground_title())
         msg = "已加入生词本" if new else "已在生词本（次数 +1）"
-        self.pill.set(f"{msg}：{word}", True, autohide=3000)
+        self.notify(f"{msg}：{word}", True, autohide=3000)
         log(f"[wordbook] {word} lemma={top.get('lemma')} new={new} "
             f"共 {len(self.wb)} 词")
 
@@ -1026,10 +1043,10 @@ class App:
     def _on_layout(self, is_ru, lang):
         log(f"[layout] 前台布局 -> {'俄语 0x0419' if is_ru else f'0x{lang:04X}'}")
         if is_ru:
-            self.pill.set("俄语布局 · 助手已就绪", True, autohide=2500)
+            self.notify("俄语布局 · 助手已就绪", True, autohide=2500)
         else:
             self.bar.hide()
-            self.pill.set(f"布局 0x{lang:04X} · 助手待命", None, autohide=2000)
+            self.notify(f"布局 0x{lang:04X} · 助手待命", None, autohide=2000)
         if self.tray is not None:
             try:
                 import tray
@@ -1059,7 +1076,9 @@ class App:
                              command=lambda: self.apply_theme("auto"))
             m.add_cascade(label=f"主题（当前 {self.cfg_theme}）", menu=tsub)
             m.add_separator()
-            m.add_command(label="隐藏状态条", command=self.pill.hide)
+            m.add_command(label="收起桌宠" if self.pet is not None else "隐藏状态条",
+                          command=(self.pet.hide if self.pet is not None
+                                   else (self.pill.hide if self.pill else lambda: None)))
             m.add_separator()
             m.add_command(label="退出", command=self.quit)
             m.tk_popup(x, y)
@@ -1067,7 +1086,7 @@ class App:
             log(f"[menu] 菜单打开失败: {e}")
 
     def show_pill(self):
-        self.pill.set(f"运行中 v{VERSION} · 右键这里可退出", True, autohide=6000)
+        self.notify(f"运行中 v{VERSION} · 右键这里可退出", True, autohide=6000)
 
     def set_paused(self, p):
         """托盘开关：暂停后钩子完全不处理按键。"""
@@ -1075,9 +1094,9 @@ class App:
         self.hook.set_enabled(not self.paused)
         if self.paused:
             self.bar.hide()
-            self.pill.set("已暂停 · 右键状态条恢复", False, autohide=4000)
+            self.notify("已暂停 · 右键状态条恢复", False, autohide=4000)
         else:
-            self.pill.set("已恢复", True, autohide=3000)
+            self.notify("已恢复", True, autohide=3000)
         log(f"[state] {'暂停' if self.paused else '继续'}")
 
     def open_rules(self):
@@ -1099,7 +1118,7 @@ class App:
                     shutil.copyfile(paths.RULES_FILE, target)
                 log(f"[rules] 已复制默认规则到 {target}")
             subprocess.Popen(["notepad.exe", target])
-            self.pill.set("已打开规则卡，改完重启生效", True, autohide=4000)
+            self.notify("已打开规则卡，改完重启生效", True, autohide=4000)
         except Exception as e:
             log(f"[rules] 打开失败: {e}")
 
@@ -1371,19 +1390,35 @@ class App:
             self._skip_seen.add(reason)
             log(f"[skip] 在 {reason} 里不弹候选条")
 
+    def notify(self, text, ok=True, autohide=3000):
+        """状态提示：有桌宠就让鲸鱼冒泡，否则用底部状态条。"""
+        try:
+            if self.pet is not None:
+                self.pet.say(text, ok, autohide)
+            elif self.pill is not None:
+                self.pill.set(text, ok, autohide)
+        except Exception as e:
+            log(f"[notify] 失败: {e}")
+
+    def notify_text(self, text, ok=True, autohide=3000):
+        self.notify(text, ok, autohide)
+
     def apply_theme(self, name, save=True):
         """切换主题：dark / light / auto，立即生效并写进 settings.json。"""
         self.cfg_theme = (name or "dark").lower()
         try:
             self.bar.apply_theme(self.cfg_theme)
-            self.pill.apply_theme(self.cfg_theme)
+            if self.pill is not None:
+                self.pill.apply_theme(self.cfg_theme)
+            if self.pet is not None:
+                self.pet.set_theme(self.cfg_theme)
         except Exception as e:
             log(f"[theme] 切换失败: {e}")
             return
         real = resolve_theme(self.cfg_theme)
         log(f"[theme] 主题={self.cfg_theme}（实际 {real}）")
         try:
-            self.pill.set("主题：" + ("深色" if real == "dark" else "浅色")
+            self.notify("主题：" + ("深色" if real == "dark" else "浅色")
                           + ("（跟随系统）" if self.cfg_theme == "auto" else ""),
                           True, autohide=2000)
         except Exception:
@@ -1422,7 +1457,7 @@ class App:
                 self.bar.render(self.bar.data, keep_sel=True)
             except Exception:
                 pass
-        self.pill.set(f"候选字号 {px}px（已保存）", True, autohide=2500)
+        self.notify(f"候选字号 {px}px（已保存）", True, autohide=2500)
         log(f"[font] 用户把候选字号调成 {px}px")
         self._save_font(px)
 
@@ -1495,12 +1530,12 @@ class App:
 
     def _heartbeat(self):
         if self.key_count == 0:
-            self.pill.update_text("已启动 · 还没收到按键（布局是吗？）", False)
+            self.notify("还没收到按键 · 检查是不是俄语布局？", False, autohide=4000)
             log(f"[心跳] 还没收到任何按键 | 前台={foreground_title()!r} "
                 f"布局=0x{foreground_lang():04X}")
             log("        如果这时你正在打字，说明钩子没收到——把 app.log 发我")
         else:
-            self.pill.update_text(
+            self.notify_text(
                 f"运行中 v{VERSION} · 已收 {self.key_count} 键", True)
         self.root.after(6000, self._heartbeat)
 
