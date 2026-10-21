@@ -50,8 +50,10 @@ WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TOPMOST = 0x00000008
 
 LANG_RU = 0x0419
+import time as _time_mod
+_BOOT_AT = _time_mod.perf_counter()
 VERBOSE = False          # 由 main() 按 --verbose 设置
-VERSION = "0.9.5"
+VERSION = "0.9.6"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -1018,6 +1020,9 @@ class App:
         return False
 
     def _trace_key(self, vk, scan, lang, ch):
+        if self.key_count == 0:
+            log(f"[启动] 首个按键: 进入代码后 "
+                f"{time.perf_counter() - _BOOT_AT:.2f}s")
         self.key_count += 1
         try:
             self._buffer_fg = user32.GetForegroundWindow()
@@ -1555,6 +1560,14 @@ class App:
         except Exception:
             return ""
 
+    def notify(self, text, ok=True, ms=2500):
+        """状态条提示。以前一堆地方调用 self.notify，但根本没这个方法，
+        每次都抛 AttributeError 被 try 吞掉——用户什么都看不到。"""
+        try:
+            self.pill.set(text, ok, autohide=ms)
+        except Exception:
+            pass
+
     def example_of(self, word):
         """给一个词找例句（按原形匹配）。"""
         if self.examples is None:
@@ -1783,9 +1796,25 @@ class App:
             log(f"[toggle] {self._mode} -> {other}")
             self._show(other)
 
+    def _watch_ping(self):
+        """被第二次启动时闪一下，说明程序本来就在跑。"""
+        try:
+            import paths
+            p = paths.user_path("ping.flag")
+            if os.path.exists(p):
+                mtime = os.path.getmtime(p)
+                if mtime > getattr(self, "_ping_seen", 0):
+                    self._ping_seen = mtime
+                    self.pill.set("已经有一个在运行（就是右下角这个 O）", False, 4500)
+                    log("[ping] 收到第二次启动的请求，已提示")
+        except Exception:
+            pass
+        self.root.after(2000, self._watch_ping)
+
     def run(self):
         self.root.after(40, self.pump)
         self.root.after(600, self._watch_layout)
+        self.root.after(2000, self._watch_ping)
         self.root.after(6000, self._heartbeat)
         try:
             import tray
@@ -1794,12 +1823,16 @@ class App:
             log(f"[tray] 启动失败: {e}")
         self.root.mainloop()
 
+    _hb_count = 0
+
     def _heartbeat(self):
         if self.key_count == 0:
-            self.pill.update_text("已启动 · 还没收到按键（布局是吗？）", False)
-            log(f"[心跳] 还没收到任何按键 | 前台={foreground_title()!r} "
-                f"布局=0x{foreground_lang():04X}")
-            log("        如果这时你正在打字，说明钩子没收到——把 app.log 发我")
+            self.pill.update_text("已启动 · 还没收到按键（看看布局）", False)
+            # 只在头 4 次写日志：每 6 秒两行会把真正有用的行冲走
+            if self._hb_count < 4:
+                self._hb_count += 1
+                log(f"[心跳] 还没收到按键 | 前台={foreground_title()!r} "
+                    f"布局=0x{foreground_lang():04X}")
         else:
             self.pill.update_text(
                 f"运行中 v{VERSION} · 已收 {self.key_count} 键", True)
@@ -1957,6 +1990,51 @@ def accept_selftest():
     return ok_all
 
 
+_SINGLE_INSTANCE = None
+_MUTEX_NAME = "Local\\OlegsRussianKeyboard_single"
+
+
+def _acquire_single_instance():
+    """同名互斥体：已经有实例在跑就返回 False。
+
+    两个实例会各自装一个键盘钩子，候选条也会弹两遍，
+    用户看到的就是"点了没反应、又点一次"。
+    """
+    global _SINGLE_INSTANCE
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL,
+                                     wintypes.LPCWSTR]
+        k32.CreateMutexW.restype = wintypes.HANDLE
+        handle = k32.CreateMutexW(None, False, _MUTEX_NAME)
+        ERROR_ALREADY_EXISTS = 183
+        if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+            return False
+        _SINGLE_INSTANCE = handle          # 持有到进程结束
+        return True
+    except Exception as e:
+        log(f"[启动] 单实例检查失败（忽略）: {e}")
+        return True
+
+
+def _ping_running_instance():
+    """告诉已经在跑的实例："有人又点了你一下"。
+
+    它会在 2 秒内闪一下状态条，用户就知道程序早就在了。
+    """
+    try:
+        import paths
+        p = paths.user_path("ping.flag")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(str(time.time()))
+        return True
+    except Exception as e:
+        log(f"[启动] 写 ping 失败: {e}")
+        return False
+
+
 def main():
     # 第一件事就写日志：只要这个文件被启动过，就一定留痕
     log("=" * 58)
@@ -2038,6 +2116,11 @@ def _run_main():
     else:
         log(f"[配置] 候选条字号固定为 {BAR_FONT_PX}px（默认，不跟随正文）")
 
+    if not _acquire_single_instance():
+        log("[启动] 已有实例在运行，已通知它闪提示，本次退出")
+        _ping_running_instance()
+        return
+
     app = App(require_lang=lang, verbose=VERBOSE, font_override=fs)
 
     extra = cfg_data.get("exclude_apps") or []
@@ -2113,6 +2196,7 @@ def _run_main():
         log(" ❌ 键盘钩子安装失败")
         sys.exit(1)
     log(" ✅ 钩子已安装")
+    log(f"[启动] 钩子就绪: 进入代码后 {time.perf_counter() - _BOOT_AT:.2f}s")
     log("=" * 58)
     log(" 用法：切到俄语布局 → 在任意输入框打俄语 → 停 0.3 秒看候选条")
     log(" 退出：Ctrl+C")

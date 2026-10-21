@@ -64,6 +64,82 @@ class WordIndex:
         return out[:limit]
 
     # ---------- 纠错 ----------
+    # 纠错只在"常见词"里找。字幕语料里混进大量转写噪声
+    # （секонд 排 139839），不设门槛就会把它们当答案。
+    COMMON_RANK = 30000
+    JUNK_RANK = 60000
+
+    def _common_words(self):
+        """常见词，按首字母分桶。
+
+        不建索引的话每次纠错要扫 3 万个词（实测 16.5 ms），
+        每敲一个键都卡一下。分桶后只剩几百个。
+        """
+        if getattr(self, "_common", None) is None:
+            buckets = {}
+            for w in self.words:
+                if self.rank.get(w, 10 ** 9) < self.COMMON_RANK:
+                    buckets.setdefault(w[:1], []).append(w)
+            self._common = buckets
+        return self._common
+
+    @staticmethod
+    def _within(a, b, limit=2):
+        """带内编辑距离（banded Levenshtein）。
+
+        只算对角线附近 limit 格，配合早停，比标准 DP 快 3-4 倍。
+        """
+        la, lb = len(a), len(b)
+        if abs(la - lb) > limit:
+            return limit + 1
+        big = limit + 1
+        prev = [big] * (lb + 1)
+        for j in range(0, min(lb, limit) + 1):
+            prev[j] = j
+        for i in range(1, la + 1):
+            cur = [big] * (lb + 1)
+            lo = max(1, i - limit)
+            hi = min(lb, i + limit)
+            if lo == 1:
+                cur[0] = i
+            best = big
+            for j in range(lo, hi + 1):
+                cost = 0 if a[i - 1] == b[j - 1] else 1
+                v = prev[j - 1] + cost
+                if prev[j] + 1 < v:
+                    v = prev[j] + 1
+                if cur[j - 1] + 1 < v:
+                    v = cur[j - 1] + 1
+                cur[j] = v
+                if v < best:
+                    best = v
+            if best > limit:
+                return big
+            prev = cur
+        return prev[lb]
+
+    def correct_near(self, word, limit=3, max_dist=2):
+        """在常见词里按编辑距离找，兼顾词频。
+
+        只做距离 1 是不够的：`сейконд` 到 `секунд` 差 3 步，
+        但用户明明就是想打这个。
+        """
+        w = word.lower()
+        # 首字母几乎不会错；桶内按词频取前 500 个就够了——
+        # 用户想打的总是常用词，罕见的错法不值得每键扫一遍。
+        common = self._common_words().get(w[:1], [])[:500]
+        if not common:
+            return []
+        scored = []
+        for cand in common:
+            if abs(len(cand) - len(w)) > max_dist:
+                continue
+            dist = self._within(w, cand, max_dist)
+            if dist <= max_dist:
+                scored.append((dist, self.rank.get(cand, 10 ** 9), cand))
+        scored.sort(key=lambda x: (x[0], x[1]))
+        return [c for _, _, c in scored[:limit]]
+
     def correct(self, word, limit=2):
         w = word.lower()
         if w in self.rank or len(w) < 2:
@@ -79,7 +155,8 @@ class WordIndex:
                 cands.add(w[:i] + c + w[i:])
                 if i < n:
                     cands.add(w[:i] + c + w[i + 1:])
-        hits = [c for c in cands if c in self.rank]
+        hits = [c for c in cands
+                if c in self.rank and self.rank[c] < self.JUNK_RANK]
         hits.sort(key=lambda x: self.rank[x])               # 更常用的排前面
         return hits[:limit]
 

@@ -116,8 +116,22 @@ def start(app):
     def on_feedback(icon=None, item=None):
         ui(lambda: app.show_feedback())
 
+    def autostart_state(item):
+        """托盘菜单里的勾：开着就是 True。"""
+        try:
+            import autostart
+            return bool(autostart.is_enabled())
+        except Exception:
+            return False
+
     def on_autostart(icon=None, item=None):
         ui(lambda: app.toggle_autostart())
+        # 让勾选状态立刻反映出来（pystray 会重新调用 autostart_state）
+        if icon is not None:
+            try:
+                icon.update_menu()
+            except Exception:
+                pass
 
     def on_review(icon=None, item=None):
         ui(lambda: app.open_review())
@@ -166,7 +180,7 @@ def start(app):
         )),
         MenuItem("复习生词本", on_review),
         MenuItem("报告问题（附日志）", on_feedback),
-        MenuItem("开机自启（开/关）", on_autostart),
+        MenuItem("开机自启", on_autostart, checked=autostart_state),
         MenuItem("导出 Anki", on_anki),
         MenuItem("主题", Menu(
             MenuItem("深色", on_theme_dark),

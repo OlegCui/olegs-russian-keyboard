@@ -291,7 +291,8 @@ class Engine:
             # 若这个词仍是 3 个以上词的前缀，用户显然没打完，不该说它拼错
             # （否则 прив 会被"更正"成 при / приз，很不礼貌）
             if not self.is_valid(w) and len(longer) < 3:
-                corrs = [{"form": c, "label": "更正"} for c in d.correct(w, 2)]
+                near = d.correct(w, 3) or d.correct_near(w, 3, 2)
+                corrs = [{"form": c, "label": "更正"} for c in near]
 
         seen = set()
         comps = [x for x in comps if not (x["form"] in seen or seen.add(x["form"]))]
