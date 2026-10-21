@@ -287,6 +287,12 @@ class LookupWindow:
                 ex = ""
             if ex:
                 out += f"\n\n例句\n────\n{ex}\n"
+        try:
+            _zh = self.examples.get_zh(w, self.eng.morph)
+        except Exception:
+            _zh = ""
+        if _zh:
+            out += f"{_zh}\n"
             try:
                 self.app.add_history(w)
             except Exception:

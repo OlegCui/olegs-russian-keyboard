@@ -76,6 +76,12 @@ EXAMPLES_FILE = _first_existing(
     os.path.join(BUNDLE, "ru-examples.tsv"),
 )
 
+# 例句的中文翻译（data/build_example_zh.py 生成，可能不存在）
+EXAMPLES_ZH_FILE = _first_existing(
+    os.path.join(BUNDLE, "..", "data", "ru-examples-zh.tsv"),
+    os.path.join(BUNDLE, "ru-examples-zh.tsv"),
+)
+
 CARDS_FILE = _first_existing(
     os.path.join(BUNDLE, "..", "data", "ru-cards.tsv"),
     os.path.join(BUNDLE, "ru-cards.tsv"),

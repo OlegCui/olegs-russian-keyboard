@@ -894,7 +894,9 @@ class App:
         try:
             import examples as ex_mod
             import paths as _paths
-            self.examples = ex_mod.Examples(getattr(_paths, "EXAMPLES_FILE", None))
+            self.examples = ex_mod.Examples(
+            getattr(_paths, "EXAMPLES_FILE", None),
+            getattr(_paths, "EXAMPLES_ZH_FILE", None))
             log(f"[配置] 例句库: {len(self.examples)} 个原形")
         except Exception as e:
             log(f"[配置] 例句库加载失败: {e}")
