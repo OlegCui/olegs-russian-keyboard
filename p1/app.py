@@ -52,8 +52,11 @@ WS_EX_TOPMOST = 0x00000008
 LANG_RU = 0x0419
 import time as _time_mod
 _BOOT_AT = _time_mod.perf_counter()
+# 打完俄语后多久内仍然接管 Ctrl+D / Ctrl+L。
+# 30 秒太短：打完词、读两行再存，就超时了（实测日志佐证）。
+HOTKEY_RECENT_S = 300
 VERBOSE = False          # 由 main() 按 --verbose 设置
-VERSION = "0.9.8"
+VERSION = "0.9.9"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -946,7 +949,8 @@ class App:
             key = "D" if vk == 0x44 else "L"
             # Ctrl+Shift+D：直接打开生词本（不存词）
             if shift and vk == 0x44:
-                recent = (time.time() - getattr(self, "_last_text_at", 0)) < 120
+                recent = (time.time() - getattr(self, "_last_text_at", 0)
+                          ) < HOTKEY_RECENT_S
                 ru = (foreground_lang() == LANG_RU) or (self.bar.visible
                                                         or recent)
                 if ru:
@@ -961,7 +965,8 @@ class App:
             # 1) 当前布局就是俄语 → 算
             # 2) 候选条还开着，且缓冲/剪贴板里有西里尔字母 → 算
             # 3) 30 秒内刚打过俄语（切到中文布局也会出现）→ 算
-            recent_ru = (time.time() - getattr(self, "_last_text_at", 0)) < 30
+            recent_ru = (time.time() - getattr(self, "_last_text_at", 0)
+                         ) < HOTKEY_RECENT_S
             ru = (foreground_lang() == LANG_RU) or (
                 has_ru and (self.bar.visible or recent_ru))
             if ru and word:
