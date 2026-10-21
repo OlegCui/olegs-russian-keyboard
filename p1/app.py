@@ -53,7 +53,7 @@ LANG_RU = 0x0419
 import time as _time_mod
 _BOOT_AT = _time_mod.perf_counter()
 VERBOSE = False          # 由 main() 按 --verbose 设置
-VERSION = "0.9.7"
+VERSION = "0.9.8"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -1163,6 +1163,7 @@ class App:
             m.add_command(label="▶ 继续" if self.paused else "⏸ 暂时关闭",
                           command=lambda: self.set_paused(not self.paused))
             m.add_command(label="复习生词本…", command=self.open_review)
+            m.add_command(label="生词本同步…", command=self.open_sync_settings)
             m.add_command(label="报告问题（附日志）…", command=self.show_feedback)
             m.add_command(label="打开日志文件夹…", command=self.open_log_folder)
             self._autostart_var = tk.BooleanVar(value=self.autostart_on())
@@ -1623,6 +1624,127 @@ class App:
                 json.dump(self.history, fh, ensure_ascii=False, indent=1)
         except Exception:
             pass
+
+    # ---------- 生词本同步 ----------
+    def attach_wordbook_sync(self, folder, quiet=False):
+        """挂上同步目录并立刻合并一次。"""
+        try:
+            self._sync_dir = folder or ""
+            self.wb.attach_sync(self._sync_dir,
+                                log=lambda m: log(m))
+            if not folder:
+                return 0
+            added = self.wb.sync_pull()
+            self.wb.sync_push_now()
+            if added and not quiet:
+                self.notify(f"从同步目录合并了 {added} 个词", True, 4000)
+            elif not quiet:
+                self.notify("生词本已同步", True, 2500)
+            return added
+        except Exception as e:
+            log(f"[sync] 挂载失败: {e}")
+            if not quiet:
+                self.notify(f"同步失败: {e}", False, 4000)
+            return 0
+
+    def open_sync_settings(self):
+        """选一个同步文件夹（OneDrive / 坚果云 / 任意网盘目录）。"""
+        import tkinter as tk
+        import tkinter.ttk as ttk
+        from tkinter import filedialog
+        from tkinter import messagebox
+
+        win = tk.Toplevel(self.root)
+        win.title("生词本同步")
+        win.geometry("560x300")
+        win.configure(bg="#ffffff")
+        try:
+            ttk.Style(win).theme_use("vista")
+        except Exception:
+            pass
+
+        tk.Label(win, text="把生词本放进一个「同步文件夹」，换电脑时指向同一个文件夹即可。",
+                 font=("Microsoft YaHei UI", 10), bg="#ffffff",
+                 anchor="w", justify="left", wraplength=520).pack(
+                     fill="x", padx=16, pady=(14, 4))
+
+        cur = tk.StringVar(value=getattr(self, "_sync_dir", "") or "")
+        path_lbl = tk.Label(win, textvariable=cur, bg="#f4f5f7",
+                            relief="solid", bd=1, anchor="w",
+                            font=("Consolas", 9), padx=8, pady=6,
+                            wraplength=500, justify="left")
+        path_lbl.pack(fill="x", padx=16, pady=6)
+
+        info = tk.StringVar(value="")
+        tk.Label(win, textvariable=info, bg="#ffffff", fg="#666",
+                 font=("Microsoft YaHei UI", 9), anchor="w").pack(
+                     fill="x", padx=16)
+
+        def refresh_info():
+            folder = cur.get()
+            if not folder:
+                info.set("未开启同步 —— 生词本只在本机。")
+                return
+            try:
+                import sync as sync_mod
+                words, added, nfiles = sync_mod.read_folder(folder)
+                state = "目录可用" if os.path.isdir(folder) else "目录不存在"
+                info.set(f"{state} · 云端 {len(words)} 词 · 读到 {nfiles} 个文件")
+            except Exception as e:
+                info.set(f"检查失败: {e}")
+
+        def choose():
+            d = filedialog.askdirectory(
+                parent=win, title="选择同步文件夹（例如 OneDrive 里的某个目录）")
+            if d:
+                cur.set(d)
+                refresh_info()
+
+        def turn_off():
+            cur.set("")
+            apply_and_close()
+
+        def apply_and_close():
+            folder = cur.get().strip()
+            if folder and not os.path.isdir(folder):
+                messagebox.showwarning("目录不存在", "请选一个已存在的文件夹。",
+                                       parent=win)
+                return
+            self._save_setting("wordbook_sync_dir", folder)
+            added = self.attach_wordbook_sync(folder)
+            log(f"[sync] 目录={folder!r} 新增={added}")
+            # 生词本窗口开着的话刷新一下
+            try:
+                if getattr(self, "_wb_win", None) is not None:
+                    self._wb_win.destroy()
+                    self._wb_win = None
+            except Exception:
+                pass
+            win.destroy()
+
+        def sync_now():
+            if not cur.get():
+                messagebox.showinfo("同步", "还没选目录。", parent=win)
+                return
+            if not os.path.isdir(cur.get()):
+                messagebox.showwarning("目录不存在", "请重新选择。", parent=win)
+                return
+            self.attach_wordbook_sync(cur.get())
+            refresh_info()
+
+        bar = tk.Frame(win, bg="#ffffff")
+        bar.pack(fill="x", padx=16, pady=14)
+        ttk.Button(bar, text="选择文件夹…", command=choose).pack(side="left")
+        ttk.Button(bar, text="立即同步", command=sync_now).pack(side="left", padx=8)
+        ttk.Button(bar, text="关闭同步", command=turn_off).pack(side="left")
+        ttk.Button(bar, text="保存并关闭", command=apply_and_close).pack(side="right")
+
+        refresh_info()
+        win.attributes("-topmost", True)
+        win.lift()
+        win.focus_force()
+        win.after(400, lambda: win.attributes("-topmost", False))
+        return win
 
     # ---------- 开机自启 ----------
     def autostart_on(self):
@@ -2157,6 +2279,18 @@ def _run_main():
     if "next_word" in cfg_data:
         app.next_word = bool(cfg_data["next_word"])
     log(f"[配置] 下一个词预测={app.next_word}")
+
+    # 生词本同步：有配置就在启动时合并一次（静默，不弹提示）
+    sync_dir = (cfg_data.get("wordbook_sync_dir") or "").strip()
+    if sync_dir:
+        app._sync_dir = sync_dir
+        if os.path.isdir(sync_dir):
+            log(f"[配置] 生词本同步目录: {sync_dir}")
+            app.attach_wordbook_sync(sync_dir, quiet=True)
+        else:
+            log(f"[配置] 同步目录不存在，已跳过: {sync_dir}")
+    else:
+        log("[配置] 生词本同步: 未开启")
     # 预热：第一次打字不应该比别人慢一拍
     try:
         app.eng.complete("прив")

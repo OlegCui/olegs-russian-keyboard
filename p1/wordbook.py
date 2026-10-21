@@ -23,6 +23,9 @@ class WordBook:
         self.path = path
         self.md_path = md_path
         self.words = []          # 按加入顺序
+        self._sync = None        # 同步器（可选）
+        self._sync_timer = None
+        self._syncing = False
         self._load()
 
     # ---------- 持久化 ----------
@@ -46,8 +49,60 @@ class WordBook:
                 json.dump({"version": 1, "words": self.words}, fh,
                           ensure_ascii=False, indent=1)
             os.replace(tmp, self.path)
+            self._push_soon()
         except Exception as e:
             print(f"[wordbook] 保存失败: {e}", file=__import__("sys").stderr)
+
+    # ---------- 同步 ----------
+    def attach_sync(self, folder, log=None):
+        """挂上同步目录（OneDrive / 坚果云 / 任何同步文件夹）。"""
+        import sync as sync_mod
+        self._sync = sync_mod.WordbookSync(folder, log=log) if folder else None
+        return self._sync
+
+    @property
+    def sync_folder(self):
+        return self._sync.folder if self._sync else ""
+
+    def sync_pull(self):
+        """启动时：读云端（含冲突副本）合并进来。返回新增词数。"""
+        if not self._sync or not self._sync.available():
+            return 0
+        try:
+            merged, added = self._sync.pull_and_merge(self.words)
+        except Exception as e:
+            if self._sync.log:
+                self._sync.log(f"[sync] 合并失败: {e}")
+            return 0
+        if added or len(merged) != len(self.words):
+            self.words = merged
+            self._save_only()
+            self.export_md()
+            self._push_soon()
+        return added
+
+    def sync_push_now(self):
+        """立刻把本地词表写到同步目录。"""
+        if not self._sync or not self._sync.available():
+            return False
+        return self._sync.push(self.words)
+
+    def _push_soon(self, delay=3.0):
+        """改动后延迟推送：连续复习不会每次都写盘。"""
+        if not self._sync or not self._sync.available():
+            return
+        try:
+            if self._sync_timer is not None:
+                self._sync_timer.cancel()
+            import threading
+            self._sync_timer = threading.Timer(delay, self.sync_push_now)
+            self._sync_timer.daemon = True
+            self._sync_timer.start()
+        except Exception:
+            self.sync_push_now()
+
+    def _save_only(self):
+        self.save()
 
     # ---------- 增删 ----------
     def add(self, word, lemma="", pos="", case="", app=""):
