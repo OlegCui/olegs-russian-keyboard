@@ -56,7 +56,7 @@ _BOOT_AT = _time_mod.perf_counter()
 # 30 秒太短：打完词、读两行再存，就超时了（实测日志佐证）。
 HOTKEY_RECENT_S = 300
 VERBOSE = False          # 由 main() 按 --verbose 设置
-VERSION = "0.9.9"
+VERSION = "0.10.0"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 

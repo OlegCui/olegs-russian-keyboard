@@ -177,6 +177,7 @@ def main():
     ap.add_argument("--key", default=os.environ.get("DEEPSEEK_API_KEY", ""))
     ap.add_argument("--key-file", default="",
                     help="从文件读 key（避免出现在命令行历史/聊天记录里）")
+    ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--delay", type=float, default=0.25,
                     help="每张之间停顿，避免触发限流")
     ap.add_argument("--min-count", type=int, default=0,
@@ -232,28 +233,47 @@ def main():
     done, failed = 0, []
     tin = tout = 0
     t0 = time.time()
-    for i, (word, cnt) in enumerate(todo[:a.limit], 1):
+
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    lock = threading.Lock()
+
+    def work(item):
+        word, cnt = item
         obj, usage, err = request_card(word, morph, a.key, a.model, a.api_base)
-        if obj is None:                       # 重试一次
+        if obj is None:
             obj, usage2, err2 = request_card(word, morph, a.key, a.model,
                                              a.api_base)
             usage = usage2 or usage
             err = err2 or err
-        if usage:
-            tin += usage.get("prompt_tokens", 0)
-            tout += usage.get("completion_tokens", 0)
-        if obj is None:
-            failed.append((word, err))
-            print(f"  [{i}/{n}] {word:16} 失败: {err[:60]}")
-        else:
-            with open(a.out, "a", encoding="utf-8") as fh:
-                fh.write(row_of(word, morph_info(word, morph).strip("（）"),
-                                obj) + "\n")
-            done += 1
-            if i % 25 == 0 or i <= 3:
+        return word, obj, usage, err
+
+    with ThreadPoolExecutor(max_workers=max(1, a.workers)) as pool:
+        futs = [pool.submit(work, it) for it in todo[:a.limit]]
+        for i, fut in enumerate(as_completed(futs), 1):
+            try:
+                word, obj, usage, err = fut.result()
+            except Exception as e:
+                failed.append(("<unknown>", str(e)))
+                continue
+            if usage:
+                tin += usage.get("prompt_tokens", 0)
+                tout += usage.get("completion_tokens", 0)
+            if obj is None:
+                failed.append((word, err))
+                if len(failed) <= 5:
+                    print(f"  [{i}/{n}] {word:16} 失败: {str(err)[:60]}")
+            else:
+                with lock:
+                    with open(a.out, "a", encoding="utf-8") as fh:
+                        fh.write(row_of(word,
+                                        morph_info(word, morph).strip("（）"),
+                                        obj) + "\n")
+                    done += 1
+            if i % 50 == 0:
                 print(f"  [{i}/{n}] {word:16} 累计 {done} 张，"
                       f"{time.time()-t0:.0f}s")
-        time.sleep(a.delay)
 
     real = (tin / 1e6 * PRICE["in_hit"] + tout / 1e6 * PRICE["out"])
     print(f"\n  完成 {done} 张，失败 {len(failed)} 个，"

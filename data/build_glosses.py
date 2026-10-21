@@ -113,6 +113,7 @@ def main():
     ap.add_argument("--model", default="deepseek-chat")
     ap.add_argument("--api-base", default="https://api.deepseek.com")
     ap.add_argument("--delay", type=float, default=0.12)
+    ap.add_argument("--workers", type=int, default=4)
     a = ap.parse_args()
 
     data = json.load(open(WB, encoding="utf-8"))
@@ -149,32 +150,44 @@ def main():
     done = fail = 0
     tin = tout = 0
     t0 = time.time()
-    by_id = {id(w): w for w in words}
 
-    for i, w in enumerate(todo, 1):
-        g, usage, err = ask(w["word"], w.get("pos", ""), a.key, a.model, a.api_base)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def work(w):
+        g, usage, err = ask(w["word"], w.get("pos", ""), a.key, a.model,
+                            a.api_base)
         if g is None:
-            g, usage2, err2 = ask(w["word"], w.get("pos", ""), a.key, a.model, a.api_base)
+            g, usage2, err2 = ask(w["word"], w.get("pos", ""), a.key,
+                                  a.model, a.api_base)
             usage = usage2 or usage
             err = err2 or err
-        if usage:
-            tin += usage.get("prompt_tokens", 0)
-            tout += usage.get("completion_tokens", 0)
-        if g is None:
-            fail += 1
-            if fail <= 5:
-                print(f"  [{i}] {w['word']:16} 失败: {err}")
-        else:
-            w["gloss_raw"] = w.get("gloss_raw") or w.get("gloss") or ""
-            w["gloss"] = g
-            w["gloss_src"] = "llm"
-            done += 1
-        if i % 50 == 0:
-            json.dump(data, open(WB + ".tmp", "w", encoding="utf-8"),
-                      ensure_ascii=False, indent=1)
-            os.replace(WB + ".tmp", WB)
-            print(f"  [{i}/{len(todo)}] 已改 {done}，"
-                  f"{time.time()-t0:.0f}s")
+        return w, g, usage, err
+
+    with ThreadPoolExecutor(max_workers=max(1, a.workers)) as pool:
+        futs = [pool.submit(work, w) for w in todo]
+        for i, fut in enumerate(as_completed(futs), 1):
+            try:
+                w, g, usage, err = fut.result()
+            except Exception as e:
+                fail += 1
+                continue
+            if usage:
+                tin += usage.get("prompt_tokens", 0)
+                tout += usage.get("completion_tokens", 0)
+            if g is None:
+                fail += 1
+                if fail <= 5:
+                    print(f"  [{i}] {w['word']:16} 失败: {err}")
+            else:
+                w["gloss_raw"] = w.get("gloss_raw") or w.get("gloss") or ""
+                w["gloss"] = g
+                w["gloss_src"] = "llm"
+                done += 1
+            if i % 100 == 0:
+                json.dump(data, open(WB + ".tmp", "w", encoding="utf-8"),
+                          ensure_ascii=False, indent=1)
+                os.replace(WB + ".tmp", WB)
+                print(f"  [{i}/{len(todo)}] 已改 {done}，{time.time()-t0:.0f}s")
 
     json.dump(data, open(WB + ".tmp", "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)

@@ -96,6 +96,7 @@ def main():
     ap.add_argument("--model", default="deepseek-chat")
     ap.add_argument("--api-base", default="https://api.deepseek.com")
     ap.add_argument("--delay", type=float, default=0.1)
+    ap.add_argument("--workers", type=int, default=4)
     a = ap.parse_args()
 
     rows = []
@@ -138,23 +139,37 @@ def main():
     ok = fail = 0
     tin = tout = 0
     t0 = time.time()
-    with open(OUT, "a", encoding="utf-8") as out:
-        for i, (w, s) in enumerate(todo, 1):
-            zh, usage, err = translate(s, a.key, a.model, a.api_base)
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def work(item):
+        w, sent = item
+        zh, usage, err = translate(sent, a.key, a.model, a.api_base)
+        return item, zh, usage, err
+
+    out = open(OUT, "a", encoding="utf-8")
+    with ThreadPoolExecutor(max_workers=max(1, a.workers)) as pool:
+        futs = [pool.submit(work, it) for it in todo]
+        for i, fut in enumerate(as_completed(futs), 1):
+            try:
+                (w, sent), zh, usage, err = fut.result()
+            except Exception:
+                fail += 1
+                continue
             if usage:
                 tin += usage.get("prompt_tokens", 0)
                 tout += usage.get("completion_tokens", 0)
             if zh is None:
                 fail += 1
                 if fail <= 5:
-                    print(f"  [{i}] 失败: {err} | {s[:40]}")
+                    print(f"  [{i}] 失败: {err} | {sent[:40]}")
             else:
-                out.write(f"{w}\t{s}\t{zh}\n")
+                out.write(f"{w}\t{sent}\t{zh}\n")
                 out.flush()
                 ok += 1
-            if i % 100 == 0:
+            if i % 200 == 0:
                 print(f"  [{i}/{len(todo)}] 已翻 {ok}，{time.time()-t0:.0f}s")
-            time.sleep(a.delay)
+    out.close()
 
     real = tin / 1e6 * PRICE["in"] + tout / 1e6 * PRICE["out"]
     print(f"\n  完成 {ok}，失败 {fail}，耗时 {(time.time()-t0)/60:.1f} 分钟")
