@@ -95,6 +95,26 @@ def main():
     print(f"  确认候选=True 收起了={not app.bar.visible}  "
           f"{'PASS' if ok else 'FAIL'}")
 
+    # 不在词表的词：以前什么都不弹（用户以为坏了），现在给一行提示
+    app.hook.buffer = "вазнкал"
+    app._update("вазнкал")
+    pump()
+    data = app.bar.data or {}
+    findings = data.get("findings") or []
+    ok = (app.bar.visible and app._mode == "warn"
+          and any("词表" in (f.get("title") or "") for f in findings))
+    ok_all = ok_all and ok
+    print(f"  生词提示: 模式={app._mode} 可见={app.bar.visible} "
+          f"提示={[f.get('title') for f in findings]}  {'PASS' if ok else 'FAIL'}")
+
+    # 正常词不受影响
+    app.hook.buffer = "прив"
+    app._update("прив")
+    pump()
+    ok = app.bar.visible and app._mode == "complete"
+    ok_all = ok_all and ok
+    print(f"  正常词仍补全: 模式={app._mode}  {'PASS' if ok else 'FAIL'}")
+
     app.hook.stop()
     app.root.destroy()
     print("\n" + ("全部通过" if ok_all else "有失败项"))

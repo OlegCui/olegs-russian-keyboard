@@ -53,7 +53,7 @@ LANG_RU = 0x0419
 import time as _time_mod
 _BOOT_AT = _time_mod.perf_counter()
 VERBOSE = False          # 由 main() 按 --verbose 设置
-VERSION = "0.9.6"
+VERSION = "0.9.7"
 DEBOUNCE_MS = 120       # 停止输入多久后弹出候选条
 BAR_FONT_PX = 28        # 候选条固定字号（像素），不再跟随正文
 
@@ -1502,6 +1502,18 @@ class App:
             c["mode"] = "cases"
             c["hint"] = "Tab 看补全" if comp else ""
             variants["cases"] = c
+        if not variants and not valid and len(word) >= 4:
+            # 常见词表里没有、形态分析也不认识：很可能拼错了。
+            # 不弹东西最糟——用户以为软件坏了。给一行提示。
+            # complete() 里已经找过补全和更正了，走到这里说明都没有，
+            # 不必再搜一遍（重复调用会多花 100ms 以上）
+            variants["warn"] = {
+                "token": word, "lemma": word, "current": {},
+                "items": [],
+                "findings": [{"title": f"«{word}» 不在词表里，可能拼错了"}],
+                "mode": "warn",
+                "hint": "",
+            }
         if not variants:
             self.bar.hide()
             return
@@ -1509,7 +1521,12 @@ class App:
         self._word = word
         self._variants = variants
         # 规则：有补全就先帮拼写；没补全了（词已写完）才自动切到变格教学
-        mode = "complete" if "complete" in variants else "cases"
+        if "complete" in variants:
+            mode = "complete"
+        elif "cases" in variants:
+            mode = "cases"
+        else:
+            mode = "warn"
         self._show(mode)
         self._timing["show"] = (time.perf_counter() - t3) * 1000
 
